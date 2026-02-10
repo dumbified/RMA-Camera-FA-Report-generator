@@ -17,7 +17,7 @@ CONFIDENCE_THRESHOLD = 0.75  # If model confidence below this, fallback to rules
 MIN_VALID_PEAK = 50       # Threshold separating "Black Background" from "Grey Object"
 PEAK_SENSITIVITY = 0.05   # The Grey Peak must be at least 5% height of the Black Peak
 DEFECT_RATIO_LIMIT = 0.05  # 5% of pixels in a segment
-ABS_DIE_MEAN = 55
+ABS_DIE_MEAN = 35
 ABS_WHITE_MEAN = 160
 WHITE_OUTLIER_SIGMA = 2.5
 WHITE_OUTLIER_MIN_DIFF = 15
@@ -34,7 +34,7 @@ class SquarePad:
 # Setup Inference
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Try to find the model file
-MODEL_PATH = 'mobilevitv2.pth'
+MODEL_PATH = 'mobilevitv2_noweights2.pth'
 if not os.path.exists(MODEL_PATH):
     MODEL_PATH = 'defect_model_mobilevit_v2.pth'
 
@@ -158,35 +158,33 @@ def classify_segment(
     ratio_dark = count_dark / total_pixels
     ratio_white = count_white / total_pixels
 
-    # Mean-based hard rules
+    # High-priority mask-based rule:
+    # - If more than 50% of pixels are dark  -> DIE
+    # - Else if more than 50% are white     -> WHITE
+    if ratio_dark > 0.5:
+        return "DIE", ratio_dark, ratio_white
+    if ratio_white > 0.5:
+        return "WHITE", ratio_dark, ratio_white
+
+    # Mean-based hard rules (fallback when neither dark nor white > 50%)
     if seg_mean < ABS_DIE_MEAN:
         return "DIE", ratio_dark, ratio_white
     if seg_mean > ABS_WHITE_MEAN or seg_mean > dynamic_white_thresh:
         return "WHITE", ratio_dark, ratio_white
 
-    # Mask-based rules
-    if ratio_dark > defect_ratio_limit and ratio_white > defect_ratio_limit:
-        if seg_mean < mid_gray:
-            return "DIE", ratio_dark, ratio_white
-        return "WHITE", ratio_dark, ratio_white
-    if ratio_dark > defect_ratio_limit:
-        return "DIE", ratio_dark, ratio_white
-    if ratio_white > defect_ratio_limit:
-        return "WHITE", ratio_dark, ratio_white
+    # Otherwise, treat segment as OK
     return "OK", ratio_dark, ratio_white
 
-def determine_final_label(segment_labels, segment_means):
+def determine_final_label(segment_labels, segment_means, overall_mean):
     """
     Consolidates per-segment labels into a single image label.
     """
-    # 1. Whole Segment Check (if all are DIE and very dark)
-    if all(label == "DIE" for label in segment_labels):
-        median_mean = float(np.median(segment_means)) if segment_means else 0.0
-        if median_mean <= WHOLE_SEGMENT_MEAN_MAX:
-            return "Whole Segment"
-        return "Die Segment"
-    
-    # 2. Priority check
+    # Additional whole-segment rule: if overall image mean is very low,
+    # treat it as Whole Segment regardless of per-segment labels.
+    if overall_mean <= 35.0:
+        return "Whole Segment"
+
+    # Priority check
     if "DIE" in segment_labels:
         return "Die Segment"
     if "WHITE" in segment_labels:
@@ -259,7 +257,8 @@ def run_rule_based_check(img_gray, num_segments=10):
         
         segment_labels.append(label)
 
-    final_label = determine_final_label(segment_labels, segment_means)
+    overall_mean = float(np.mean(img_gray))
+    final_label = determine_final_label(segment_labels, segment_means, overall_mean)
     return final_label
 
 def ensure_output_folders(base_output_folder):
@@ -303,7 +302,7 @@ def classify_image(img, num_segments=NUM_SEGMENTS):
         final_category = model_category
         method = "Model"
 
-        if conf_score < CONFIDENCE_THRESHOLD:
+        if conf_score <= CONFIDENCE_THRESHOLD:
             print(f"Low confidence ({conf_score:.2f}) for detection. Running rule-based check...")
             
             # 1. Set to Pending because conf is low
