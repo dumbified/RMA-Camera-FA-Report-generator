@@ -21,6 +21,12 @@ from main import (
     extract_vit_id,
 )
 
+try:
+    from csv_to_mysql import upload_csv_to_mysql, fetch_review_results
+except ImportError:
+    upload_csv_to_mysql = None
+    fetch_review_results = None
+
 CATEGORIES_FILE = os.path.join(os.path.dirname(__file__), "categories.json")
 
 
@@ -120,6 +126,7 @@ def build_gui():
     input_var = tk.StringVar(value=DEFAULT_INPUT_FOLDER)
     output_var = tk.StringVar(value=DEFAULT_OUTPUT_FOLDER)
     csv_name_var = tk.StringVar(value="review_results.csv")
+    upload_mysql_var = tk.BooleanVar(value=False)
 
     def browse_input():
         path = filedialog.askdirectory(title="Select Input Folder")
@@ -298,7 +305,19 @@ def build_gui():
             for image_path, category in decisions.items():
                 save_image_to_category(image_path, output_folder, category)
 
-            review_status_var.set(f"Review complete. Saved CSV to {csv_path}.")
+            status_msg = f"Review complete. Saved CSV to {csv_path}."
+            if upload_mysql_var.get() and upload_csv_to_mysql is not None:
+                ok, msg = upload_csv_to_mysql(csv_path)
+                if ok:
+                    status_msg += f" MySQL: {msg}"
+                else:
+                    messagebox.showwarning("MySQL upload failed", msg)
+            elif upload_mysql_var.get() and upload_csv_to_mysql is None:
+                messagebox.showwarning(
+                    "MySQL upload skipped",
+                    "Install csv_to_mysql dependency: pip install mysql-connector-python",
+                )
+            review_status_var.set(status_msg)
 
         preview_label.config(image="", text="No image loaded")
         plot_label.config(image="")
@@ -339,33 +358,47 @@ def build_gui():
     main_frame = ttk.Frame(root, padding=12)
     main_frame.pack(fill="both", expand=True)
 
-    ttk.Label(main_frame, text="Batch Processing", font=("Helvetica", 12, "bold")).pack(anchor="w")
+    notebook = ttk.Notebook(main_frame)
+    notebook.pack(fill="both", expand=True)
 
-    input_row = ttk.Frame(main_frame)
+    tab_review = ttk.Frame(notebook, padding=8)
+    tab_database = ttk.Frame(notebook, padding=8)
+    notebook.add(tab_review, text="Batch & Review")
+    notebook.add(tab_database, text="View Database")
+
+    # --- Tab 1: Batch & Review (existing content) ---
+    ttk.Label(tab_review, text="Batch Processing", font=("Helvetica", 12, "bold")).pack(anchor="w")
+
+    input_row = ttk.Frame(tab_review)
     input_row.pack(fill="x", pady=6)
     ttk.Label(input_row, text="Input folder:", width=14).pack(side="left")
     ttk.Entry(input_row, textvariable=input_var).pack(side="left", fill="x", expand=True, padx=6)
     ttk.Button(input_row, text="Browse", command=browse_input).pack(side="left")
 
-    output_row = ttk.Frame(main_frame)
+    output_row = ttk.Frame(tab_review)
     output_row.pack(fill="x", pady=6)
     ttk.Label(output_row, text="Output folder:", width=14).pack(side="left")
     ttk.Entry(output_row, textvariable=output_var).pack(side="left", fill="x", expand=True, padx=6)
     ttk.Button(output_row, text="Browse", command=browse_output).pack(side="left")
 
-    run_row = ttk.Frame(main_frame)
+    run_row = ttk.Frame(tab_review)
     run_row.pack(fill="x", pady=6)
     ttk.Button(run_row, text="Run Batch", command=run_batch).pack(side="left")
     ttk.Label(run_row, text="CSV name:").pack(side="left", padx=(16, 6))
     ttk.Entry(run_row, textvariable=csv_name_var, width=24).pack(side="left")
+    ttk.Checkbutton(
+        run_row,
+        text="Upload to MySQL after save",
+        variable=upload_mysql_var,
+    ).pack(side="left", padx=(16, 0))
 
-    ttk.Separator(main_frame).pack(fill="x", pady=12)
-    ttk.Label(main_frame, text="Review Batch Results", font=("Helvetica", 12, "bold")).pack(anchor="w")
+    ttk.Separator(tab_review).pack(fill="x", pady=12)
+    ttk.Label(tab_review, text="Review Batch Results", font=("Helvetica", 12, "bold")).pack(anchor="w")
 
     review_status_var = tk.StringVar(value="No batch results yet.")
-    ttk.Label(main_frame, textvariable=review_status_var).pack(anchor="w", pady=2)
+    ttk.Label(tab_review, textvariable=review_status_var).pack(anchor="w", pady=2)
 
-    preview_frame = ttk.Frame(main_frame)
+    preview_frame = ttk.Frame(tab_review)
     preview_frame.pack(fill="x", pady=6)
     preview_container = tk.Frame(preview_frame, width=520, height=320)
     preview_container.pack_propagate(False)
@@ -426,11 +459,64 @@ def build_gui():
     ttk.Button(review_buttons, text="Skip", command=skip_current).pack(side="left")
     ttk.Button(review_buttons, text="Save & Quit", command=save_and_quit).pack(side="left", padx=6)
 
-    review_text = tk.Text(main_frame, height=6, state="disabled")
+    review_text = tk.Text(tab_review, height=6, state="disabled")
     review_text.pack(fill="x", expand=False, pady=6)
 
-    plot_label = ttk.Label(main_frame)
+    plot_label = ttk.Label(tab_review)
     plot_label.pack(fill="x", pady=4)
+
+    # --- Tab 2: View Database ---
+    ttk.Label(tab_database, text="Review results from MySQL", font=("Helvetica", 12, "bold")).pack(anchor="w")
+    db_status_var = tk.StringVar(value="Click Refresh to load data from the database.")
+    ttk.Label(tab_database, textvariable=db_status_var).pack(anchor="w", pady=(0, 4))
+
+    db_toolbar = ttk.Frame(tab_database)
+    db_toolbar.pack(fill="x", pady=(0, 6))
+
+    def refresh_db_view():
+        for item in db_tree.get_children():
+            db_tree.delete(item)
+        if fetch_review_results is None:
+            db_status_var.set("mysql-connector-python not installed; cannot fetch from database.")
+            return
+        ok, data = fetch_review_results()
+        if not ok:
+            db_status_var.set(f"Error: {data}")
+            messagebox.showerror("Database Error", str(data))
+            return
+        for row in data:
+            vit, filename, category, created_at = row
+            created_str = str(created_at)[:19] if created_at else ""
+            db_tree.insert("", tk.END, values=(vit, filename, category, created_str))
+        db_status_var.set(f"Loaded {len(data)} row(s) from MySQL.")
+
+    ttk.Button(db_toolbar, text="Refresh", command=refresh_db_view).pack(side="left")
+
+    db_container = ttk.Frame(tab_database)
+    db_container.pack(fill="both", expand=True)
+    db_scroll_y = ttk.Scrollbar(db_container)
+    db_scroll_x = ttk.Scrollbar(db_container)
+    db_tree = ttk.Treeview(
+        db_container,
+        columns=("vit", "filename", "category", "created_at"),
+        show="headings",
+        height=20,
+        yscrollcommand=db_scroll_y.set,
+        xscrollcommand=db_scroll_x.set,
+    )
+    db_tree.heading("vit", text="VIT")
+    db_tree.heading("filename", text="Filename")
+    db_tree.heading("category", text="Category")
+    db_tree.heading("created_at", text="Created at")
+    db_tree.column("vit", width=120)
+    db_tree.column("filename", width=320)
+    db_tree.column("category", width=140)
+    db_tree.column("created_at", width=160)
+    db_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+    db_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+    db_tree.pack(side=tk.LEFT, fill="both", expand=True)
+    db_scroll_y.config(command=db_tree.yview)
+    db_scroll_x.config(command=db_tree.xview)
 
     update_hotkey_label()
     root.bind("<Key>", handle_keypress)
