@@ -1,0 +1,379 @@
+{
+  "order": [
+    "intro",
+    "visual_check",
+    "power_on_unit",
+    "screening",
+    "ecc_rework",
+    "good_camh",
+    "bad_camh_dvm",
+    "pcba_ats",
+    "pcba_programming",
+    "ft",
+    "axi",
+    "fa_based_on",
+    "fa_camh",
+    "fa_pcba",
+    "npf_summary"
+  ],
+  "sections": {
+    "intro": [
+      {
+        "id": "intro_default",
+        "when": {},
+        "text": "After received RMA Camera Unit, proceed the analysis as per below:"
+      }
+    ],
+    "visual_check": [
+      {
+        "id": "visual_ok",
+        "when": {
+          "visual_check": "No missing/No Burnt"
+        },
+        "text": "Visual Check --> Unit received in good condition, no missing/burnt components"
+      },
+      {
+        "id": "visual_missing_burnt",
+        "when": {
+          "visual_check": "Got missing/burnt"
+        },
+        "text": "Visual Check --> Unit received in no under good condition, {remark_missing_burnt} missing/burnt"
+      }
+    ],
+    "power_on_unit": [
+      {
+        "id": "power_can_ping",
+        "when": {
+          "power_on_unit": "Can Ping"
+        },
+        "text": "Power ON the unit --> Unit able to power ON and successful communicate with PC"
+      },
+      {
+        "id": "power_cannot_ping",
+        "when": {
+          "power_on_unit": "Cannot Ping"
+        },
+        "text": "Power ON the unit --> Unit able to power ON, but unsuccessful communicate with PC"
+      }
+    ],
+    "screening": [
+      {
+        "id": "screening_block",
+        "when": {
+          "pcba": "*",
+          "camh": "*",
+          "scintillator": "*"
+        },
+        "text": "Screening PCBA and camera head --> \\n     PCBA ----> {pcba}, \\n     Camera head ----> {camh}, \\n     Scintillator ----> {scintillator}"
+      }
+    ],
+    "pcba_programming": [
+      {
+        "id": "pcba_programming_3g",
+        "when": {
+          "camera_model": "3G"
+        },
+        "text": "Perform Firmware programing of PCBA --> Programing PASS"
+      },
+      {
+        "id": "pcba_programming_31g",
+        "when": {
+          "camera_model": "3.1G Old"
+        },
+        "text": "Perform Power Fixes programing of PCBA --> Programing PASS"
+      },
+      {
+        "id": "pcba_programming_31g_new",
+        "when": {
+          "camera_model": "3.1G New"
+        },
+        "text": "Perform Power Fixes programing of PCBA --> Programing PASS"
+      }
+    ],
+    "ecc_rework": [
+      {
+        "id": "ecc_na",
+        "when": {
+          "ecc_rework": "NA"
+        },
+        "text": "EEC Rework - This unit had been reworked"
+      },
+      {
+        "id": "ecc_3g",
+        "when": {
+          "ecc_rework": "3G rework"
+        },
+        "text": "ECC Rework - VOD electromigration fix  --> \\n - R89, R91, R97, R98 change to 10kohm resistor\\n - R93, R95, R99, R100 change to 100kohm resistor\\n - C112, C113, C114, C116 added 10nF capacitor\\nSince the +20V voltage become stable, the VOD current spike also is reduced."
+      },
+      {
+        "id": "ecc_31g_old",
+        "when": {
+          "ecc_rework": "3.1G old Rework"
+        },
+        "text": "ECC Rework - VOD electromigration fix  --> \\n - R89, R91, R97, R98 change to 10kohm resistor\\n - R93, R95, R99, R100 change to 100kohm resistor\\n - C112, C113, C114, C116 added 10nF capacitor\\n - C60 change to 10nF capacitor\\nSince the +20V voltage become stable, the VOD current spike also is reduced.\\nECC Rework- power cycle failure fix   --> \\n - C65, replace Zener diodes \\n - Scratch the trace and add on 4 resistor in Power IC \\n - R451 change to 4.64K ohm resistor\\nSince the 2V voltage, Power IC be more stable using power cycle."
+      },
+      {
+        "id": "ecc_31g_new",
+        "when": {
+          "ecc_rework": "3.1G new Rework"
+        },
+        "text": "ECC Rework- CDD image fix   --> \\n - R487, R524 change to 7.5k ohm resistor \\nTo provide more stable voltage to capture image."
+      }
+    ],
+    "good_camh": [
+      {
+        "id": "good_camh_all_pass",
+        "when": {
+          "good_camh": "All Pass"
+        },
+        "text": "Since Camera head screening result is perfect, will proceed to HCTE test and checking the wafer trace got eletro migration\\nHCTE Test --> PASS\\nWafer trace checking --> No Bubble"
+      },
+      {
+        "id": "good_camh_bubble",
+        "when": {
+          "good_camh": "Got Bubble"
+        },
+        "text": "Since Camera head screening result is perfect, will proceed to HCTE test and checking the wafer trace got eletro migration\\nHCTE Test --> PASS\\nWafer trace checking --> Got Bubble"
+      },
+      {
+        "id": "good_camh_hcte_fail",
+        "when": {
+          "good_camh": "HCTE Fail"
+        },
+        "text": "Since Camera head screening result is perfect, will proceed to HCTE test and checking the wafer trace got eletro migration\\nHCTE Test --> Fail\\nWafer trace checking --> No Bubble"
+      },
+      {
+        "id": "good_camh_bubble_hcte_fail",
+        "when": {
+          "good_camh": "Got bubble and HCTE Fail"
+        },
+        "text": "Since Camera head screening result is perfect, will proceed to HCTE test and checking the wafer trace got eletro migration\\nHCTE Test --> Fail\\nWafer trace checking --> Got Bubble"
+      }
+    ],
+    "bad_camh_dvm": [
+      {
+        "id": "bad_camh_repairable",
+        "when": {
+          "can_repair_bad_camh": "able"
+        },
+        "text": "After verify, this Camh DVM result for {dvm_location} shown {dvm_result} short/malfunction cause it have {bad_camh_condition}. After repair, PASS"
+      },
+      {
+        "id": "bad_camh_unable_repair",
+        "when": {
+          "can_repair_bad_camh": "unable"
+        },
+        "text": "After verify, this Camh DVM result for {dvm_location} shown {dvm_result} short/malfunction and unable to repair it."
+      }
+    ],
+    "pcba_ats": [
+      {
+        "id": "ats_pass",
+        "when": {
+          "pcba_ats_result": "Pass"
+        },
+        "text": "Perform ATS of PCBA --> Measuring voltage and all testing was PASS"
+      },
+      {
+        "id": "ats_fail_repairable",
+        "when": {
+          "pcba_ats_result": "Fail",
+          "pcba_can_repair": "able"
+        },
+        "text": "Perform ATS of PCBA --> Measuring voltage and all testing was fail and show {ats_fail_mode} fail.\\n   --> After verify is {pcba_component_category} short/malfunction"
+      },
+      {
+        "id": "ats_fail_unable_replace_pcba",
+        "when": {
+          "pcba_ats_result": "Fail",
+          "pcba_can_repair": "unable"
+        },
+        "text": "Perform ATS of PCBA --> Measuring voltage and all testing was fail and show {ats_fail_mode} fail.\\n   --> After verify, this unit unable to repair --> proceed replace new PCBA"
+      },
+      {
+        "id": "ats_fail_unable_scrap_pcba",
+        "when": {
+          "pcba_ats_result": "Fail",
+          "pcba_can_repair": "scrap"
+        },
+        "text": "Perform ATS of PCBA --> Measuring voltage and all testing was fail and show {ats_fail_mode} fail.\\n   --> After verify, this unit unable to repair --> proceed to scrap"
+      }
+    ],
+    "ft": [
+      {
+        "id": "ft_pass_new",
+        "when": {
+          "ft_result": "Pass with new camh"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment\\n   Produce Functional Test(FT) using New Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment"
+      },
+      {
+        "id": "ft_pass_ori",
+        "when": {
+          "ft_result": "Pass with ori camh"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment\\n   Produce Functional Test(FT) using ori Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment"
+      },
+      {
+        "id": "ft_pass_swap",
+        "when": {
+          "ft_result": "Pass with swap camh"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment\\n   Produce Functional Test(FT) using Swap Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment"
+      },
+      {
+        "id": "ft_pass_repaired",
+        "when": {
+          "ft_result": "Pass with repaired camh"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment\\n   Produce Functional Test(FT) using repaired Camera head\\n -Test was successfully PASS with perfect for forward and reverse segment"
+      },
+      {
+        "id": "ft_fail_repair_component",
+        "when": {
+          "ft_result": "Fail",
+          "ft_can_repair": "able"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n   -Fail, --> After verify is component {ft_fail_component} cause FT fail. Replace and rework the component.\\n   -Test was successfully PASS with perfect for forward and reverse segment\\n   Produce Functional Test(FT) using {ft_pass_camh}\\n   -Test was successfully PASS with perfect for forward and reverse segment."
+      },
+      {
+        "id": "ft_fail_scrap",
+        "when": {
+          "ft_result": "Fail",
+          "ft_can_repair": "scrap"
+        },
+        "text": "Perform Functional Test (FT) using Tester Camera head\\n   -Fail, --> After verify is component {ft_fail_component} cause FT fail. Replace and rework the component.\\n   -After test, still unable to PASS ---> Proceed to scrap"
+      }
+    ],
+    "axi": [
+      {
+        "id": "axi_pass",
+        "when": {
+          "axi_performed": true
+        },
+        "text": "Perform testing AXI machine --> PASS"
+      }
+    ],
+    "fa_based_on": [
+      {
+        "id": "fa_based_on_any_fa",
+        "when": {
+          "fa_camh": "*"
+        },
+        "text": "Based on failure analysis, "
+      }
+    ],
+    "fa_camh": [
+      {
+        "id": "fa_camh_le2_seg_89504_0004",
+        "when": {
+          "fa_camh": "<=2 segment and 89504-0004"
+        },
+        "text": "1. Perform image functional test.\\nResult: Segment died/bad due to camera head part (CCD)\\n\\n2. Check history of the lot during IQA inspection & camera head assembly.\\nResult: No any issue detected during IQA inspection on CCD and camera head assembly.\\n\\n3. Perform electrical measurement and profiling trend on OS wirebond pad of affected segment\\nResult: Segment failure related to RST wirebond/busses\\n\\n4. Perform optical inspection on affected segment focusing on characteristic wirebond damage matching\\nResult: Component and bond wire/pad are in good condition. Wirebond encapsulation is fully coated.\\n\\n5. Verify wirebond condition by applying external force on coating glue.\\nResult: RST wirebond weaken compared to other wirebond\\n\\nRoot Cause Analysis:\\n1. Due to the segment of the camera died/bad.\\n2. Wirebond having weak contact on the PCB bond pad.\\n3. Wire bonding strength weaken under power up condition over time on wire bond with high electrical/frequency properties.\\n4. Unsuitable encapsulation material. Current encapsulation material purpose is only to protect wirebond from moisture/halogen element that can caused corrosion, not for holding (adhesion) the wire bond.\\n\\nBased on the Failure Analysis and this CCD serial number is 89504-0004XXXX. So we suspect this CCD wafer trace have bubble since it is old CCD and new CCD that implement start by 89504-00085XXX."
+      },
+      {
+        "id": "fa_camh_le2_seg_89504_0004_to_89504_00085",
+        "when": {
+          "fa_camh": "<=2 segment and 89504-0004 to 89504-00085"
+        },
+        "text": "1. On the bus trace at CCD shown a lot of bubble cause the trace unable to connect .\\n2.During the VDDF turn on, it caused the +20V voltage drop significantly as low as 16.9V.\\nThis is due to the high load capacitance of the VDDF has drawn large current as the dv/dt is very high.\\nInstability of the +20V affect the U68 LDO operation which causes the current spike.\\n\\nBased on the Failure Analysis and this CCD serial number is 89504-0004XXXX. So we suspect this CCD wafer trace have bubble since it is old CCD and new CCD that implement start by 89504-00085XXX."
+      },
+      {
+        "id": "fa_camh_hcte_fail",
+        "when": {
+          "fa_camh": "HCTE Fail"
+        },
+        "text": "1. Perform image functional test.\\nResult: Segment died/bad due to camera head part (CCD)\\n\\n2.Perform optical inspection on affected segment focusing on characteristic wirebond damage matching\\nResult: Component and bond wire/pad are in good condition. Wirebond encapsulation is fully coated."
+      },
+      {
+        "id": "fa_camh_line_between",
+        "when": {
+          "fa_camh": "Line between segment"
+        },
+        "text": "1. Perform FT on the defect unit\\nResult: Image turned dark due to camera head\\n\\n2. Perform visual inspection on the camera CCD\\nResult: Nor abnormality found. Wire bond & wafer busses in good condition and coating coverage fulfill process requirement\\n\\n3. Perform measurement on the CCD\\nResult: Abnormal voltage reading on the VCC and VDDR which related to voltage IC or wire bonding itself\\n\\n4. Apply mechanical stress of related wire bond\\nResult: Wirebond have good bonding where wirebond break on the neck (not lifted from the base)\\n\\nBased on above FA, highly suspected the image turned dark due to voltage supplied IC damaged."
+      },
+      {
+        "id": "fa_camh_whole_segment",
+        "when": {
+          "fa_camh": "Whole segment"
+        },
+        "text": "1. Perform image functional test. \\nResult: Segment died/bad due to camera head part (CCD) \\n2. Visual inspect on the trace CCD \\nResult: no bubble encounter, failure not related to electromigration \\n3. Wirebond and visual inspect component CCD on the top layer. \\nResult: did not observed any wire bond or any electronic components damage \\n4. Perform ohming measuring on CCD by using DVM. \\nResult: all measurement parameters within range\\n\\nBased on the failure analysis above, this RMA unit high suspect the CCD sensor cause whole segment."
+      },
+      {
+        "id": "fa_camh_white_segment",
+        "when": {
+          "fa_camh": "White segment"
+        },
+        "text": "1. Perform image functional test. \\nResult: Segment died/bad due to camera head part (CCD) \\n2. Visual inspect on the trace CCD \\nResult: no bubble encounter, failure not related to electromigration \\n3. Wirebond and visual inspect component CCD on the top layer. \\nResult: did not observed any wire bond or any electronic components damage \\n4. Perform ohming measuring on CCD by using DVM. \\nResult: all measurement parameters within range\\n\\nBased on the failure analysis above, this RMA unit high suspect the CCD sensor cause white segment."
+      },
+      {
+        "id": "fa_camh_old_ccd_fail",
+        "when": {
+          "fa_camh": "Old CCD fail"
+        },
+        "text": "This RMA unit will fail because of the Camera head is old Camera head after fix electromigration."
+      },
+      {
+        "id": "fa_camh_perfect_but_bubble",
+        "when": {
+          "fa_camh": "perfect but got bubble"
+        },
+        "text": "1. On the bus trace at CCD shown a lot of bubble cause the trace unable to connect .\\n\\nBased on the Failure Analysis and this CCD serial number is 89504-0004XXXX. So we suspect this CCD wafer trace have bubble since it is old CCD and new CCD that implement start by 89504-00085XXX."
+      },
+      {
+        "id": "fa_camh_repairing_camh",
+        "when": {
+          "fa_camh": "Repairing Camh"
+        },
+        "text": "This RMA unit was CCD {dvm_result} short cause {bad_camh_condition}."
+      },
+      {
+        "id": "fa_camh_le2_segment",
+        "when": {
+          "fa_camh": "<=2 segment"
+        },
+        "text": "This RMA unit was CCD {dvm_result} short cause {bad_camh_condition}."
+      }
+    ],
+    "fa_pcba": [
+      {
+        "id": "fa_pcba_npf",
+        "when": {
+          "npf_final": true
+        },
+        "text": "The RMA unit was no problem found and unable to duplicate customer failure --> All test was performed and the result was perfect."
+      },
+      {
+        "id": "fa_pcba_knock_off_burnt",
+        "when": {
+          "fa_pcba": "Component knock off/burnt"
+        },
+        "text": "This RMA unit was PCBA {remark_missing_burnt} Component knock off/burnt cause the PCBA malfunction."
+      },
+      {
+        "id": "fa_pcba_short_malfunction",
+        "when": {
+          "fa_pcba": "Component short/malfunction"
+        },
+        "text": "This RMA unit was PCBA {component_cause_ats} Component short/malfunction cause {ats_fail_mode} Fail."
+      },
+      {
+        "id": "fa_pcba_high_suspect",
+        "when": {
+          "fa_pcba": "Scrap"
+        },
+        "text": "This RMA unit was PCBA high suspect is {pcba_scrap_why} cause {ats_fail_mode} Fail."
+      }
+    ],
+    "npf_summary": [
+      {
+        "id": "npf_summary_line",
+        "when": {
+          "npf_final": true
+        },
+        "text": "Based on failure analysis, the RMA unit is No Problem Found (NPF)."
+      }
+    ]
+  }
+}
+
