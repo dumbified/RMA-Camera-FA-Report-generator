@@ -15,6 +15,11 @@ def _ensure_directory(path: str) -> None:
         os.makedirs(directory, exist_ok=True)
 
 
+def _normalize_newlines(s: str) -> str:
+    """Turn literal \\n in strings (e.g. from JSON) into real newlines for display."""
+    return (s or "").replace("\\n", "\n")
+
+
 def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> None:
     """Label on left, checkbox (small box) on right."""
     f = ttk.Frame(parent)
@@ -142,9 +147,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Remark if missing or burnt [multiline textbox]
-    ttk.Label(form_frame, text="Remark if missing or burnt").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    remark_missing_burnt_text = tk.Text(form_frame, height=3, wrap="word")
-    remark_missing_burnt_text.grid(row=row, column=1, sticky="ew", pady=2)
+    remark_missing_burnt_text = _textbox(form_frame, "Remark if missing or burnt", 3, row)
     row += 1
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
@@ -184,9 +187,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Which DVM show it fail [multiline textbox]
-    ttk.Label(form_frame, text="Which DVM show it fail").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    which_dvm_fail_text = tk.Text(form_frame, height=3, wrap="word")
-    which_dvm_fail_text.grid(row=row, column=1, sticky="ew", pady=2)
+    which_dvm_fail_text = _textbox(form_frame, "Which DVM show it fail", 3, row)
     row += 1
 
     # Can repair? [dropdown]
@@ -194,9 +195,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Component Cause: [multiline textbox]
-    ttk.Label(form_frame, text="Component Cause:").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    component_cause_text = tk.Text(form_frame, height=2, wrap="word")
-    component_cause_text.grid(row=row, column=1, sticky="ew", pady=2)
+    component_cause_text = _textbox(form_frame, "Component Cause:", 2, row)
     row += 1
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
@@ -207,9 +206,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # If failed, state the ATS result [multiline textbox]
-    ttk.Label(form_frame, text="If failed, state the ATS result").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    ats_result_if_failed_text = tk.Text(form_frame, height=2, wrap="word")
-    ats_result_if_failed_text.grid(row=row, column=1, sticky="ew", pady=2)
+    ats_result_if_failed_text = _textbox(form_frame, "If failed, state the ATS result", 2, row)
     row += 1
 
     # Can repair? [dropdown]
@@ -217,9 +214,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Component cause: [multiline textbox]
-    ttk.Label(form_frame, text="Component cause:").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    component_cause_ats_text = tk.Text(form_frame, height=2, wrap="word")
-    component_cause_ats_text.grid(row=row, column=1, sticky="ew", pady=2)
+    component_cause_ats_text = _textbox(form_frame, "Component cause:", 2, row)
     row += 1
 
     # Component Category: [dropdown - single row] (PCBA component categories)
@@ -238,9 +233,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # IF fail, component change? [multiline textbox]
-    ttk.Label(form_frame, text="IF fail, component change?").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=2)
-    ft_fail_component_change_text = tk.Text(form_frame, height=2, wrap="word")
-    ft_fail_component_change_text.grid(row=row, column=1, sticky="ew", pady=2)
+    ft_fail_component_change_text = _textbox(form_frame, "IF fail, component change?", 2, row)
     row += 1
 
     # Can repair? [dropdown]
@@ -462,9 +455,8 @@ def build_failure_form_gui() -> None:
                     try:
                         text = text.format(**form)
                     except Exception:
-                        # If some placeholder is missing, keep raw text
                         pass
-                    text = text.strip()
+                    text = _normalize_newlines(text).strip()
                     if text:
                         paragraphs.append(text)
 
@@ -792,62 +784,99 @@ def build_failure_form_gui() -> None:
         }
         countermeasure = countermeasure_map.get(db_key, "N/A")
 
-        # Assemble summary block as a simple text table.
         rows = [
             ("Camera Main Issue", camera_main_issue or "N/A"),
             ("Camera - Head", camera_head or "N/A"),
             ("Camera - PCBA", camera_pcba or "N/A"),
             ("Scintillator", scintillator_field or "N/A"),
             ("Root Cause Categories", root_cause_cat or "N/A"),
-            ("Failure Analysis / Root Cause", failure_root_cause or "N/A"),
+            ("Failure Analysis / Root Cause", _normalize_newlines(failure_root_cause or "N/A")),
             ("Disposition", disposition),
             ("Disposition on RMA unitRequired", disposition_rma),
-            ("Reason to Scrap", reason_to_scrap),
+            ("Reason to Scrap", _normalize_newlines(reason_to_scrap or "N/A")),
             ("Need Replacement", need_replacement),
             ("Replaced By", replaced_by),
-            ("Action Taken on Repairing", action_taken_str),
-            ("Countermeasure", countermeasure),
+            ("Action Taken on Repairing", _normalize_newlines(action_taken_str or "N/A")),
+            ("Countermeasure", _normalize_newlines(countermeasure or "N/A")),
         ]
-
-        # Compute column width for the field names.
-        max_key_len = max(len(name) for name, _ in rows + [("Field", "")])
-        header = f"{'Field'.ljust(max_key_len)} | Value"
-        separator = "-" * len(header)
-
-        lines = [header, separator]
-        for name, value in rows:
-            key = name.ljust(max_key_len)
-            # Support multi-line values (especially for FA / Countermeasure).
-            value_lines = (value or "").splitlines() or [""]
-            first = True
-            for line in value_lines:
-                if first:
-                    lines.append(f"{key} | {line}")
-                    first = False
-                else:
-                    lines.append(f"{' '.ljust(max_key_len)} | {line}")
-
-        return "\n".join(lines)
+        return rows
 
     def show_report_window() -> None:
         data = collect_data()
         body_text = build_report_text(data)
-        summary_text = build_summary_fields(data, body_text)
-        # Only show the summary table; the detailed numbered body is included
-        # in the "Failure Analysis / Root Cause" row and not repeated below.
-        report_text = summary_text
+        rows = build_summary_fields(data, body_text)
 
         win = tk.Toplevel(root)
         win.title("Generated JIRA Report")
-        win.geometry("900x600")
+        win.geometry("920x620")
 
-        text_widget = tk.Text(win, wrap="word")
-        text_widget.pack(fill="both", expand=True)
-        text_widget.insert("1.0", report_text)
+        def _copy_report():
+            names = [name for name, _ in rows]
+            values = [(value or "").strip().replace("\n", " ") for _, value in rows]
+            tsv = "\t".join(names) + "\n" + "\t".join(values)
+            win.clipboard_clear()
+            win.clipboard_append(tsv)
 
-        # Optional: select-all for easy copy
-        text_widget.focus_set()
-        text_widget.tag_add("sel", "1.0", "end-1c")
+        main = ttk.Frame(win, padding=8)
+        main.pack(fill="both", expand=True)
+        canvas = tk.Canvas(main, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main, orient="vertical", command=canvas.yview)
+        content = ttk.Frame(canvas)
+
+        def _on_content_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(canvas_window_id, width=e.width)
+
+        content.bind("<Configure>", _on_content_configure)
+        canvas_window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window_id, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        scroll_units = 4
+
+        def _on_mousewheel(e):
+            if getattr(e, "num", None) == 5:
+                canvas.yview_scroll(scroll_units, "units")
+            elif getattr(e, "num", None) == 4:
+                canvas.yview_scroll(-scroll_units, "units")
+            elif hasattr(e, "delta"):
+                d = e.delta if abs(e.delta) < 120 else e.delta // 120
+                canvas.yview_scroll(-d * scroll_units, "units")
+
+        def _bind_wheel(w):
+            w.bind("<MouseWheel>", _on_mousewheel)
+            w.bind("<Button-4>", _on_mousewheel)
+            w.bind("<Button-5>", _on_mousewheel)
+            for c in w.winfo_children():
+                _bind_wheel(c)
+
+        btn_row = ttk.Frame(content)
+        btn_row.pack(fill="x", pady=(0, 8))
+        ttk.Button(btn_row, text="Copy report to clipboard", command=_copy_report).pack(side="left")
+
+        table_frame = ttk.Frame(content)
+        table_frame.pack(fill="both", expand=True)
+        _bind_wheel(canvas)
+        _bind_wheel(content)
+
+        table_frame.columnconfigure(1, weight=1)
+        value_wraplength = 680
+        for r, (field_name, value) in enumerate(rows):
+            ttk.Label(table_frame, text=field_name + ":", font=("", 10, "bold")).grid(
+                row=r, column=0, sticky="nw", padx=(0, 12), pady=4
+            )
+            lbl = ttk.Label(
+                table_frame,
+                text=value or "",
+                wraplength=value_wraplength,
+                anchor="w",
+                justify="left",
+            )
+            lbl.grid(row=r, column=1, sticky="nw", pady=4)
+
+        win.focus_set()
 
     def save_to_csv() -> None:
         data = collect_data()
