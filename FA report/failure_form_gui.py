@@ -79,6 +79,7 @@ def build_failure_form_gui() -> None:
         form_frame.columnconfigure(i, weight=1)
 
     # --- Variables ---
+    vit_id_var = tk.StringVar(value="")
     npf_all_reworked_var = tk.BooleanVar(value=False)
     customer_request_var = tk.BooleanVar(value=False)
     camera_model_var = tk.StringVar(value="3.3G")
@@ -111,6 +112,11 @@ def build_failure_form_gui() -> None:
     bad_camh_assemble_bubble_var = tk.BooleanVar(value=False)
 
     row = 0
+
+    # --- VIT ID [single-line entry] ---
+    ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+    ttk.Entry(form_frame, textvariable=vit_id_var, width=20).grid(row=row, column=1, sticky="ew", pady=2)
+    row += 1
 
     # --- If NPF and all reworked? [checkbox right] ---
     _checkbox_row(form_frame, "If NPF and all reworked?", npf_all_reworked_var, row)
@@ -314,6 +320,7 @@ def build_failure_form_gui() -> None:
         pcba_can_repair_val = (can_repair_ats_var.get() or "").strip().lower()
         ft_can_repair_val = (can_repair_ft_var.get() or "").strip().lower()
         return {
+            "vit_id": vit_id_var.get().strip(),
             "npf_all_reworked": _bool_to_str(npf_all_reworked_var.get()),
             "customer_request": _bool_to_str(customer_request_var.get()),
             "camera_model": camera_model_var.get(),
@@ -366,6 +373,7 @@ def build_failure_form_gui() -> None:
         }
 
     def clear_form() -> None:
+        vit_id_var.set("")
         npf_all_reworked_var.set(False)
         customer_request_var.set(False)
         camera_model_var.set("3.3G")
