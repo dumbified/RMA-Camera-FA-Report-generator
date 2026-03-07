@@ -20,12 +20,74 @@ def _normalize_newlines(s: str) -> str:
     return (s or "").replace("\\n", "\n")
 
 
-def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> None:
+def _load_31g_component_lookup() -> dict[str, tuple[str, str, str]]:
+    """
+    Load 3.1G component CSV (MfgComment, PartID, Description).
+    Return mapping: component_ref_lower -> (PartID, Description, display_ref).
+    Keys are lowercased for case-insensitive lookup; display_ref is the ref as in CSV.
+    """
+    path = os.path.join(os.path.dirname(__file__), "3.1G component.csv")
+    ref_to_part: dict[str, tuple[str, str, str]] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                mfg = (row.get("MfgComment") or "").strip()
+                part_id = (row.get("PartID") or "").strip()
+                desc = (row.get("Description") or "").strip()
+                if not mfg or not part_id:
+                    continue
+                for ref in (r.strip() for r in mfg.split(",")):
+                    ref = ref.strip()
+                    if ref:
+                        key = ref.lower()
+                        if key not in ref_to_part:
+                            ref_to_part[key] = (part_id, desc, ref)
+    except (OSError, csv.Error):
+        pass
+    return ref_to_part
+
+
+def _build_component_action_lines(
+    e18: str, c20: str, ref_to_part: dict[str, tuple[str, str, str]]
+) -> str:
+    """
+    Build Action Taken lines from E18 (PCBA ATS component cause) and C20 (FT If fail, component change).
+    Format per line: {refs} {Description} {PartID}----->{count}
+    e.g. "F1 FUSE,SMD,SLOW-BLOW,2A,125V,OMNI-BLOK 2215-0026----->1"
+    Lookup is case-insensitive.
+    """
+    combined = f"{e18},{c20}".replace("\n", " ").replace("\r", " ")
+    refs = [r.strip() for r in combined.split(",") if r.strip()]
+    if not refs or not ref_to_part:
+        return ""
+    # group by (part_id, desc) -> list of display_refs
+    group_key_to_refs: dict[tuple[str, str], list[str]] = {}
+    for ref in refs:
+        key = ref.lower()
+        if key in ref_to_part:
+            part_id, desc, display_ref = ref_to_part[key]
+            gk = (part_id, desc)
+            group_key_to_refs.setdefault(gk, []).append(display_ref)
+    if not group_key_to_refs:
+        return ""
+    lines = []
+    for (part_id, desc), ref_list in sorted(group_key_to_refs.items()):
+        ref_list_sorted = sorted(set(ref_list), key=lambda r: (r[0].upper(), len(r), r))
+        refs_str = ", ".join(ref_list_sorted)
+        count = len(ref_list)
+        lines.append(f"- {refs_str} {desc} {part_id}----->{count}")
+    return "\n".join(lines)
+
+
+def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> ttk.Checkbutton:
     """Label on left, checkbox (small box) on right."""
     f = ttk.Frame(parent)
     f.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
     ttk.Label(f, text=text).pack(side="left")
-    ttk.Checkbutton(f, variable=variable).pack(side="right", padx=(8, 0))
+    cb = ttk.Checkbutton(f, variable=variable)
+    cb.pack(side="right", padx=(8, 0))
+    return cb
 
 
 def _dropdown(parent, variable: tk.StringVar, values: list, row: int, label: str, col: int = 0, width: int = 20) -> ttk.Combobox:
@@ -82,6 +144,7 @@ def build_failure_form_gui() -> None:
     vit_id_var = tk.StringVar(value="")
     npf_all_reworked_var = tk.BooleanVar(value=False)
     customer_request_var = tk.BooleanVar(value=False)
+    customer_request_type_var = tk.StringVar(value="")
     camera_model_var = tk.StringVar(value="3.3G")
     burnt_var = tk.BooleanVar(value=False)
     power_on_unit_var = tk.StringVar(value="")
@@ -115,22 +178,43 @@ def build_failure_form_gui() -> None:
 
     # --- VIT ID [single-line entry] ---
     ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
-    ttk.Entry(form_frame, textvariable=vit_id_var, width=20).grid(row=row, column=1, sticky="ew", pady=2)
+    vit_id_entry = ttk.Entry(form_frame, textvariable=vit_id_var, width=20)
+    vit_id_entry.grid(row=row, column=1, sticky="ew", pady=2)
     row += 1
 
     # --- If NPF and all reworked? [checkbox right] ---
-    _checkbox_row(form_frame, "If NPF and all reworked?", npf_all_reworked_var, row)
+    npf_all_reworked_cb = _checkbox_row(form_frame, "If NPF and all reworked?", npf_all_reworked_var, row)
     row += 1
 
-    # --- Customer Request? [checkbox right] ---
-    _checkbox_row(form_frame, "Customer Request?", customer_request_var, row)
+    # --- Customer Request? [checkbox + reason dropdown] ---
+    customer_req_row = ttk.Frame(form_frame)
+    customer_req_row.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+    ttk.Label(customer_req_row, text="Customer Request?").pack(side="left")
+    customer_request_cb = ttk.Checkbutton(customer_req_row, variable=customer_request_var)
+    customer_request_cb.pack(side="left", padx=(8, 0))
+    customer_request_type_cb = ttk.Combobox(
+        customer_req_row,
+        textvariable=customer_request_type_var,
+        values=[
+            "",
+            "Rework",
+            "Rework + CAMH",
+            "DONE REWORK + CAMH",
+            "Rework (DONE REWORKED)",
+            "Rework ( <= 2 segment die)",
+            "Rework (HCTE Fail)",
+        ],
+        state="readonly",
+        width=30,
+    )
+    customer_request_type_cb.pack(side="left", padx=(16, 0))
     row += 1
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
     row += 1
 
     # --- Camera Model [dropdown] ---
-    _dropdown(form_frame, camera_model_var, ["3G", "3.1G Old", "3.1G New", "3.3G", "3.4G"], row, "Camera Model", width=10)
+    camera_model_cb = _dropdown(form_frame, camera_model_var, ["3G", "3.1G Old", "3.1G New", "3.3G", "3.4G"], row, "Camera Model", width=10)
     row += 1
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
@@ -172,7 +256,14 @@ def build_failure_form_gui() -> None:
     ttk.Label(f3, text="PCBA").grid(row=0, column=0, sticky="w", padx=(0, 4))
     ttk.Combobox(f3, textvariable=pcba_var, values=["Perfect", "Line between segment", "Cannot Ping"], state="readonly", width=18).grid(row=0, column=1, sticky="ew", padx=2)
     ttk.Label(f3, text="CAMH").grid(row=0, column=2, sticky="w", padx=(8, 4))
-    ttk.Combobox(f3, textvariable=camh_var, values=["Whole Segment", "Perfect", "<= 2 segment", "Line Between Segment", "White Segment", "Multiple Segment Die"], state="readonly", width=18).grid(row=0, column=3, sticky="ew", padx=2)
+    camh_screening_cb = ttk.Combobox(
+        f3,
+        textvariable=camh_var,
+        values=["Whole Segment", "Perfect", "<= 2 segment", "Line Between Segment", "White Segment", "Multiple Segment Die"],
+        state="readonly",
+        width=18,
+    )
+    camh_screening_cb.grid(row=0, column=3, sticky="ew", padx=2)
     ttk.Label(f3, text="Scintillator").grid(row=0, column=4, sticky="w", padx=(8, 4))
     ttk.Combobox(f3, textvariable=scintillator_var, values=["Good", "Aging", "Gap", "Bubble", "Bent"], state="readonly", width=12).grid(row=0, column=5, sticky="ew", padx=2)
     row += 1
@@ -181,15 +272,15 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # --- ECC Rework [dropdown] ---
-    _dropdown(form_frame, ecc_rework_var, ["NA", "3G rework", "3.1G old Rework", "3.1G new Rework"], row, "ECC Rework", width=18)
+    ecc_rework_cb = _dropdown(form_frame, ecc_rework_var, ["NA", "3G rework", "3.1G old Rework", "3.1G new Rework"], row, "ECC Rework", width=18)
     row += 1
 
     # Good CAMH? [dropdown] (IF good camh)
-    _dropdown(form_frame, good_camh_var, ["NA", "All Pass", "Got Bubble", "HCTE Fail", "Got bubble and HCTE Fail", "All PASS + Rework"], row, "Good CAMH?", width=22)
+    good_camh_cb = _dropdown(form_frame, good_camh_var, ["NA", "All Pass", "Got Bubble", "HCTE Fail", "Got bubble and HCTE Fail", "All PASS + Rework"], row, "Good CAMH?", width=22)
     row += 1
 
     # Bad CAMH? [dropdown]
-    _dropdown(form_frame, bad_camh_var, ["NA", "Whole Segment", "Line between segment", "Die segment", "Multiple segment DIE", "White segment"], row, "Bad CAMH?", width=20)
+    bad_camh_cb = _dropdown(form_frame, bad_camh_var, ["NA", "Whole Segment", "Line between segment", "Die segment", "Multiple segment DIE", "White segment"], row, "Bad CAMH?", width=20)
     row += 1
 
     # Which DVM show it fail [multiline textbox]
@@ -197,7 +288,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Can repair? [dropdown]
-    _dropdown(form_frame, can_repair_bad_camh_var, ["", "able", "unable"], row, "Can repair?", width=10)
+    can_repair_bad_camh_cb = _dropdown(form_frame, can_repair_bad_camh_var, ["", "able", "unable"], row, "Can repair?", width=10)
     row += 1
 
     # Component Cause: [multiline textbox]
@@ -208,7 +299,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # --- PCBA ATS result [dropdown] ---
-    _dropdown(form_frame, pcba_ats_result_var, ["Pass", "Fail"], row, "PCBA ATS result")
+    pcba_ats_result_cb = _dropdown(form_frame, pcba_ats_result_var, ["Pass", "Fail"], row, "PCBA ATS result")
     row += 1
 
     # If failed, state the ATS result [multiline textbox]
@@ -216,7 +307,7 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Can repair? [dropdown]
-    _dropdown(form_frame, can_repair_ats_var, ["", "able", "unable", "Scrap"], row, "Can repair?", width=10)
+    can_repair_ats_cb = _dropdown(form_frame, can_repair_ats_var, ["", "able", "unable", "Scrap"], row, "Can repair?", width=10)
     row += 1
 
     # Component cause: [multiline textbox]
@@ -224,8 +315,65 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Component Category: [dropdown - single row] (PCBA component categories)
-    _dropdown(form_frame, component_category_var, ["", "IC", "Capacitor", "Inductor"], row, "Component Category:")
+    component_category_cb = _dropdown(form_frame, component_category_var, ["", "IC", "Capacitor", "Inductor"], row, "Component Category:")
     row += 1
+
+    def _clear_textbox(w: tk.Text) -> None:
+        prev_state = str(w.cget("state"))
+        if prev_state == "disabled":
+            w.config(state="normal")
+        w.delete("1.0", "end")
+        if prev_state == "disabled":
+            w.config(state="disabled")
+
+    def _set_widget_var(widget: tk.Widget, option: str, value) -> None:
+        var_name = str(widget.cget(option) or "")
+        if var_name:
+            root.setvar(var_name, value)
+
+    def update_screening_camh_fields() -> None:
+        camh_val = (camh_var.get() or "").strip()
+        if camh_val == "" or camh_val == "Perfect":
+            ecc_rework_var.set("")
+            good_camh_var.set("")
+            bad_camh_var.set("")
+            can_repair_bad_camh_var.set("")
+            _clear_textbox(which_dvm_fail_text)
+            _clear_textbox(component_cause_text)
+            ecc_rework_cb.config(state="disabled")
+            good_camh_cb.config(state="disabled")
+            bad_camh_cb.config(state="disabled")
+            can_repair_bad_camh_cb.config(state="disabled")
+            which_dvm_fail_text.config(state="disabled")
+            component_cause_text.config(state="disabled")
+        else:
+            good_camh_var.set("")
+            good_camh_cb.config(state="disabled")
+            ecc_rework_cb.config(state="readonly")
+            bad_camh_cb.config(state="readonly")
+            can_repair_bad_camh_cb.config(state="readonly")
+            which_dvm_fail_text.config(state="normal")
+            component_cause_text.config(state="normal")
+
+    camh_screening_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
+
+    def update_pcba_ats_fail_fields() -> None:
+        if pcba_ats_result_var.get() == "Fail":
+            ats_result_if_failed_text.config(state="normal")
+            can_repair_ats_cb.config(state="readonly")
+            component_cause_ats_text.config(state="normal")
+            component_category_cb.config(state="readonly")
+        else:
+            _clear_textbox(ats_result_if_failed_text)
+            _set_widget_var(can_repair_ats_cb, "textvariable", "")
+            _clear_textbox(component_cause_ats_text)
+            _set_widget_var(component_category_cb, "textvariable", "")
+            ats_result_if_failed_text.config(state="disabled")
+            can_repair_ats_cb.config(state="disabled")
+            component_cause_ats_text.config(state="disabled")
+            component_category_cb.config(state="disabled")
+
+    pcba_ats_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
     row += 1
@@ -235,7 +383,14 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Result: [dropdown] (FT results)
-    _dropdown(form_frame, ft_result_var, ["Pass with new camh", "Pass with ori camh", "Pass with swap camh", "Pass with repaired camh", "Fail"], row, "Result:", width=22)
+    ft_result_cb = _dropdown(
+        form_frame,
+        ft_result_var,
+        ["Pass with new camh", "Pass with ori camh", "Pass with swap camh", "Pass with repaired camh", "Fail"],
+        row,
+        "Result:",
+        width=22,
+    )
     row += 1
 
     # IF fail, component change? [multiline textbox]
@@ -243,12 +398,41 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # Can repair? [dropdown]
-    _dropdown(form_frame, can_repair_ft_var, ["", "able", "unable", "Scrap"], row, "Can repair?", width=10)
+    can_repair_ft_cb = _dropdown(form_frame, can_repair_ft_var, ["", "able", "unable", "Scrap"], row, "Can repair?", width=10)
     row += 1
 
     # IF pass, which CAMH to use? [dropdown]
-    _dropdown(form_frame, ft_pass_which_camh_var, ["", "Ori camh", "New camh", "Swap camh", "Repaired camh"], row, "IF pass, which CAMH to use?")
+    ft_pass_which_camh_cb = _dropdown(
+        form_frame,
+        ft_pass_which_camh_var,
+        ["", "Ori camh", "New camh", "Swap camh", "Repaired camh"],
+        row,
+        "IF pass, which CAMH to use?",
+    )
     row += 1
+
+    def update_ft_fail_fields() -> None:
+        r = ft_result_var.get() or ""
+        if r == "Fail":
+            ft_fail_component_change_text.config(state="normal")
+            can_repair_ft_cb.config(state="readonly")
+            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
+            ft_pass_which_camh_cb.config(state="disabled")
+        elif r.startswith("Pass"):
+            _clear_textbox(ft_fail_component_change_text)
+            _set_widget_var(can_repair_ft_cb, "textvariable", "")
+            ft_fail_component_change_text.config(state="disabled")
+            can_repair_ft_cb.config(state="disabled")
+            ft_pass_which_camh_cb.config(state="readonly")
+        else:
+            _clear_textbox(ft_fail_component_change_text)
+            _set_widget_var(can_repair_ft_cb, "textvariable", "")
+            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
+            ft_fail_component_change_text.config(state="disabled")
+            can_repair_ft_cb.config(state="disabled")
+            ft_pass_which_camh_cb.config(state="disabled")
+
+    ft_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
     row += 1
@@ -258,11 +442,11 @@ def build_failure_form_gui() -> None:
     row += 1
 
     # NPF? [checkbox right]
-    _checkbox_row(form_frame, "NPF?", npf_final_var, row)
+    npf_final_cb = _checkbox_row(form_frame, "NPF?", npf_final_var, row)
     row += 1
 
     # CAMH [dropdown] (FA Camh)
-    _dropdown(
+    camh_final_cb = _dropdown(
         form_frame,
         camh_final_var,
         [
@@ -292,14 +476,104 @@ def build_failure_form_gui() -> None:
     fa_row.columnconfigure(1, weight=1)
     fa_row.columnconfigure(3, weight=1)
     ttk.Label(fa_row, text="PCBA").grid(row=0, column=0, sticky="w", padx=(0, 8))
-    ttk.Combobox(fa_row, textvariable=pcba_final_var, values=["", "Component knock off/burnt", "Component short/malfunction", "Scrap"], state="readonly", width=28).grid(row=0, column=1, sticky="ew", padx=2)
+    pcba_final_cb = ttk.Combobox(
+        fa_row,
+        textvariable=pcba_final_var,
+        values=["", "Component knock off/burnt", "Component short/malfunction", "Scrap"],
+        state="readonly",
+        width=28,
+    )
+    pcba_final_cb.grid(row=0, column=1, sticky="ew", padx=2)
     ttk.Label(fa_row, text="Scrap? why?").grid(row=0, column=2, sticky="w", padx=(16, 8))
-    ttk.Combobox(fa_row, textvariable=scrap_why_var, values=["", "Board Aging", "Open Pad", "Unable to capture image", "Short to ground"], state="readonly", width=22).grid(row=0, column=3, sticky="ew", padx=2)
+    scrap_why_cb = ttk.Combobox(
+        fa_row,
+        textvariable=scrap_why_var,
+        values=["", "Board Aging", "Open Pad", "Unable to capture image", "Short to ground"],
+        state="readonly",
+        width=22,
+    )
+    scrap_why_cb.grid(row=0, column=3, sticky="ew", padx=2)
     row += 1
 
     # Bad CAMH did assemble? got bubble? [checkbox right]
-    _checkbox_row(form_frame, "Bad CAMH did assemble? got bubble?", bad_camh_assemble_bubble_var, row)
+    bad_camh_assemble_bubble_cb = _checkbox_row(form_frame, "Bad CAMH did assemble? got bubble?", bad_camh_assemble_bubble_var, row)
     row += 1
+
+    def update_fa_npf_fields() -> None:
+        disabled = bool(npf_final_var.get())
+        if disabled:
+            _set_widget_var(camh_final_cb, "textvariable", "")
+            _set_widget_var(pcba_final_cb, "textvariable", "")
+            _set_widget_var(scrap_why_cb, "textvariable", "")
+            _set_widget_var(bad_camh_assemble_bubble_cb, "variable", False)
+            camh_final_cb.config(state="disabled")
+            pcba_final_cb.config(state="disabled")
+            scrap_why_cb.config(state="disabled")
+            bad_camh_assemble_bubble_cb.config(state="disabled")
+        else:
+            camh_final_cb.config(state="readonly")
+            pcba_final_cb.config(state="readonly")
+            scrap_why_cb.config(state="readonly")
+            bad_camh_assemble_bubble_cb.config(state="normal")
+
+    def _set_form_inputs_locked(parent: tk.Widget, locked: bool, skip: set | None = None) -> None:
+        for child in parent.winfo_children():
+            if skip and child in skip:
+                _set_form_inputs_locked(child, locked, skip)
+                continue
+            if isinstance(child, tk.Text):
+                if locked:
+                    _clear_textbox(child)
+                child.config(state="disabled" if locked else "normal")
+            elif isinstance(child, ttk.Combobox):
+                if locked:
+                    _set_widget_var(child, "textvariable", "")
+                child.config(state="disabled" if locked else "readonly")
+            elif isinstance(child, ttk.Checkbutton):
+                if locked:
+                    _set_widget_var(child, "variable", False)
+                child.config(state="disabled" if locked else "normal")
+            elif isinstance(child, (tk.Entry, ttk.Entry)):
+                if locked:
+                    var_name = str(child.cget("textvariable") or "")
+                    if var_name:
+                        root.setvar(var_name, "")
+                    else:
+                        prev_state = str(child.cget("state"))
+                        if prev_state == "disabled":
+                            child.config(state="normal")
+                        child.delete(0, "end")
+                child.config(state="disabled" if locked else "normal")
+            _set_form_inputs_locked(child, locked, skip)
+
+    def refresh_interaction_states() -> None:
+        if npf_all_reworked_var.get():
+            _set_form_inputs_locked(form_frame, True, skip={npf_all_reworked_cb})
+            return
+        _set_form_inputs_locked(form_frame, False)
+        update_screening_camh_fields()
+        update_pcba_ats_fail_fields()
+        update_ft_fail_fields()
+        update_fa_npf_fields()
+
+        if customer_request_var.get():
+            always_enabled = {
+                vit_id_entry,
+                npf_all_reworked_cb,
+                customer_request_cb,
+                customer_request_type_cb,
+                camera_model_cb,
+            }
+            _set_form_inputs_locked(form_frame, True, skip=always_enabled)
+            customer_request_type_cb.config(state="readonly")
+        else:
+            customer_request_type_var.set("")
+            customer_request_type_cb.config(state="disabled")
+
+    npf_all_reworked_var.trace_add("write", lambda *_: refresh_interaction_states())
+    npf_final_var.trace_add("write", lambda *_: refresh_interaction_states())
+    customer_request_var.trace_add("write", lambda *_: refresh_interaction_states())
+    refresh_interaction_states()
 
     # --- Buttons ---
     btn_frame = ttk.Frame(form_frame)
@@ -319,10 +593,11 @@ def build_failure_form_gui() -> None:
     def collect_data() -> dict:
         pcba_can_repair_val = (can_repair_ats_var.get() or "").strip().lower()
         ft_can_repair_val = (can_repair_ft_var.get() or "").strip().lower()
-        return {
+        data = {
             "vit_id": vit_id_var.get().strip(),
             "npf_all_reworked": _bool_to_str(npf_all_reworked_var.get()),
             "customer_request": _bool_to_str(customer_request_var.get()),
+            "customer_request_type": customer_request_type_var.get(),
             "camera_model": camera_model_var.get(),
             "burnt": _bool_to_str(burnt_var.get()),
             # Visual check status used by report_rules.json
@@ -371,6 +646,44 @@ def build_failure_form_gui() -> None:
             # AXI matches: IF(OR(D18="scrap",D20="scrap"),"", "Perform testing AXI machine --> PASS")
             "axi_performed": pcba_can_repair_val != "scrap" and ft_can_repair_val != "scrap",
         }
+        camh_val = (data.get("camh") or "").strip()
+        if camh_val == "" or camh_val == "Perfect":
+            data["ecc_rework"] = ""
+            data["good_camh"] = ""
+            data["bad_camh"] = ""
+            data["which_dvm_fail"] = ""
+            data["can_repair_bad_camh"] = ""
+            data["component_cause"] = ""
+            data["bad_camh_condition"] = ""
+            data["dvm_result"] = ""
+        if (data.get("pcba_ats_result") or "").strip() != "Fail":
+            data["ats_result_if_failed"] = ""
+            data["can_repair_ats"] = ""
+            data["component_cause_ats"] = ""
+            data["component_category"] = ""
+            data["ats_fail_mode"] = ""
+            data["pcba_can_repair"] = ""
+            data["pcba_component_category"] = ""
+            data["pcba_scrap_component"] = ""
+            data["pcba_component_name"] = ""
+        ft_res = (data.get("ft_result") or "").strip()
+        if ft_res == "Fail":
+            data["ft_pass_which_camh"] = ""
+            data["ft_pass_camh"] = ""
+        else:
+            data["ft_fail_component_change"] = ""
+            data["can_repair_ft"] = ""
+            data["ft_can_repair"] = ""
+            data["ft_fail_component"] = ""
+        if bool(data.get("npf_final")):
+            data["camh_final"] = ""
+            data["pcba_final"] = ""
+            data["scrap_why"] = ""
+            data["fa_camh"] = ""
+            data["fa_pcba"] = ""
+            data["pcba_scrap_why"] = ""
+            data["bad_camh_assemble_bubble"] = "No"
+        return data
 
     def clear_form() -> None:
         vit_id_var.set("")
@@ -412,6 +725,16 @@ def build_failure_form_gui() -> None:
                 return json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             messagebox.showerror("Report rules", f"Could not load report_rules.json:\n{exc}")
+            return None
+
+    def _load_customer_request_templates() -> dict | None:
+        """Load customer_request_templates.json (customer request summary presets)."""
+        path = os.path.join(os.path.dirname(__file__), "customer_request_templates.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            messagebox.showerror("Customer request", f"Could not load customer_request_templates.json:\n{exc}")
             return None
 
     def _match_conditions(form: dict, conditions: dict) -> bool:
@@ -515,6 +838,7 @@ def build_failure_form_gui() -> None:
         pcba_can_repair = form.get("pcba_can_repair") or ""
         pcba_scrap_why = form.get("pcba_scrap_why") or ""
         ats_fail_mode = form.get("ats_fail_mode") or ""
+        customer_tpl = None
 
         # 1. Camera Main Issue – use only derived head_issue / pcba_issue (A45/A46), not NPF checkbox.
         # P/F status for key areas (matches database N42:N48).
@@ -638,6 +962,33 @@ def build_failure_form_gui() -> None:
         # 6. Failure Analysis / Root Cause
         failure_root_cause = failure_body
 
+        # Customer request templates override (from customer_request_templates.json)
+        templates = _load_customer_request_templates()
+        cust_req_type = (form.get("customer_request_type") or "").strip()
+        label_to_key = {
+            "Rework": "customer request rework",
+            "Rework + CAMH": "customer request rework+camh",
+            "DONE REWORK + CAMH": "customer request DONE REWORK+camh",
+            "Rework (DONE REWORKED)": "customer request rework (DONE REWORKED)",
+            "Rework ( <= 2 segment die)": "customer request rework(<= 2 segement die)",
+            "Rework (HCTE Fail)": "customer request rework (HCTE Fail)",
+        }
+        if customer_req and templates and cust_req_type in label_to_key:
+            customer_tpl = templates.get(label_to_key[cust_req_type])
+            if customer_tpl:
+                camera_main_issue = customer_tpl.get("camera_main_issue", camera_main_issue)
+                camera_head = customer_tpl.get("camera_head", camera_head)
+                camera_pcba = customer_tpl.get("camera_pcba", camera_pcba)
+                scintillator_field = customer_tpl.get("scintillator", scintillator_field)
+                root_cause_cat = customer_tpl.get("root_cause_categories", root_cause_cat)
+                failure_root_cause = customer_tpl.get("failure_root_cause", failure_root_cause)
+                disposition = customer_tpl.get("disposition", "Unable to Repair")
+                disposition_rma = customer_tpl.get("disposition_rma", disposition)
+                reason_to_scrap = customer_tpl.get("reason_to_scrap", "N/A")
+                need_replacement = customer_tpl.get("need_replacement", "Yes")
+                replaced_by = customer_tpl.get("replaced_by", "New Camera Head")
+                countermeasure = customer_tpl.get("countermeasure", "N/A")
+
         # 7–8. Disposition + Disposition on RMA unitRequired (rows 219–223)
         ft_can_repair = form.get("ft_can_repair") or ""
         scrap_flag = pcba_can_repair == "scrap" or ft_can_repair == "scrap"
@@ -647,95 +998,124 @@ def build_failure_form_gui() -> None:
             or ft_result in ("Pass with new camh", "Pass with swap camh")
         )
 
-        # Follow Excel's VLOOKUP table order: Scrap, Unable to Repair, Repair, No problem found.
-        if scrap_flag:
-            disposition = "Scrap"
-        elif npf_final:
-            disposition = "No problem found"
-        elif unable_flag:
-            disposition = "Unable to Repair"
-        else:
-            disposition = "Repair"
-        disposition_rma = disposition
-
-        # 9. Reason to Scrap – if scrapped, show only the final FA paragraph starting from "Based on (the) failure analysis"
-        if disposition == "Scrap" and failure_root_cause:
-            text = failure_root_cause
-            # Try to find the last occurrence of the FA closing prefix
-            idx = max(
-                text.rfind("Based on failure analysis"),
-                text.rfind("Based on the failure analysis"),
-                text.rfind("Based on the Failure Analysis"),
-            )
-            if idx != -1:
-                reason_to_scrap = text[idx:].lstrip()
+        if customer_tpl is None:
+            # Follow Excel's VLOOKUP table order: Scrap, Unable to Repair, Repair, No problem found.
+            # Special case: if Camera Main Issue is "No Problem Found", Disposition is "No problem found"
+            # and Disposition on RMA unitRequired is "Not going to repair".
+            if (camera_main_issue or "").strip() == "No Problem Found":
+                disposition = "No problem found"
+                disposition_rma = "Not going to repair"
+            elif scrap_flag:
+                disposition = "Scrap"
+                disposition_rma = disposition
+            elif unable_flag:
+                disposition = "Unable to Repair"
+                disposition_rma = disposition
             else:
-                reason_to_scrap = text
-        else:
-            reason_to_scrap = "N/A"
+                disposition = "Repair"
+                disposition_rma = disposition
 
-        # 10–11. Need Replacement + Replaced By – single value from first TRUE row (A95:B100).
-        ft_lower = ft_result.strip().lower() if ft_result else ""
-        unable = pcba_can_repair == "unable" or ft_can_repair == "unable"
-        e20_new_camh = (form.get("ft_pass_which_camh") or "").strip().lower() == "new camh"
-        replaced_by = "N/A"
-        if ft_lower == "pass with new camh" and unable:
-            replaced_by = "PASS with new camh"
-        elif ft_lower == "pass with swap camh" and unable:
-            replaced_by = "Swap Camera Head and New PCBA"
-        elif ft_lower == "pass with new camh" or e20_new_camh:
-            replaced_by = "New Camera Head"
-        elif ft_lower == "pass with swap camh":
-            replaced_by = "Swap Camera Head"
-        elif unable:
-            replaced_by = "New PCBA"
-        need_replacement = "Yes" if replaced_by != "N/A" else "No"
+            # 9. Reason to Scrap – if scrapped, show only the final FA paragraph starting from "Based on (the) failure analysis"
+            if disposition == "Scrap" and failure_root_cause:
+                text = failure_root_cause
+                # Try to find the last occurrence of the FA closing prefix
+                idx = max(
+                    text.rfind("Based on failure analysis"),
+                    text.rfind("Based on the failure analysis"),
+                    text.rfind("Based on the Failure Analysis"),
+                )
+                if idx != -1:
+                    reason_to_scrap = text[idx:].lstrip()
+                else:
+                    reason_to_scrap = text
+            else:
+                reason_to_scrap = "N/A"
+
+            # 10–11. Need Replacement + Replaced By – single value from first TRUE row (A95:B100).
+            ft_lower = ft_result.strip().lower() if ft_result else ""
+            unable = pcba_can_repair == "unable" or ft_can_repair == "unable"
+            e20_new_camh = (form.get("ft_pass_which_camh") or "").strip().lower() == "new camh"
+            replaced_by = "N/A"
+            if ft_lower == "pass with new camh" and unable:
+                replaced_by = "PASS with new camh"
+            elif ft_lower == "pass with swap camh" and unable:
+                replaced_by = "Swap Camera Head and New PCBA"
+            elif ft_lower == "pass with new camh" or e20_new_camh:
+                replaced_by = "New Camera Head"
+            elif ft_lower == "pass with swap camh":
+                replaced_by = "Swap Camera Head"
+            elif unable:
+                replaced_by = "New PCBA"
+            need_replacement = "Yes" if replaced_by != "N/A" else "No"
 
         # 12. Action Taken on Repairing – CONCATENATE(B104, CHAR(10), B105, CHAR(10), B106) with exact wording.
         ecc_rework = (form.get("ecc_rework") or "").strip()
         camera_model = (form.get("camera_model") or "").strip()
-        b104 = ""
-        if ecc_rework == "3G rework":
-            b104 = (
-                "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
-                "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
-                "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
-            )
-        elif ecc_rework == "3.1G old Rework":
-            b104 = (
-                "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
-                "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
-                "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
-                "- C60  change to 10nF capacitor --> 2230-0185 x1\n"
-                "- C65,replace Zener diodes --> 2250-0057 x1\n"
-                "- Scratch the trace and add on 4 resistor in Power IC --> 2220-0399 x4\n"
-                "- R451 change to 4.64K ohm resistor -->        2220-0054 x1\n"
-                "- R487, R524 change to 7.5k ohm resistor --> 2220-0056 x2"
-            )
-        elif ecc_rework == "3.1G new Rework":
-            b104 = (
-                "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
-                "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
-                "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
-                "- C60  change to 10nF capacitor --> 2230-0185 x1\n"
-                "- C65,replace Zener diodes --> 2250-0057 x1\n"
-                "- R15, R18, R19, R20, added 4.7K ohm resistor --> 2220-0279 x4\n"
-                "- R451 change to 4.64K ohm resistor -->        2220-0054 x1"
-            )
-        if ft_lower == "pass with swap camh":
-            b105 = "- Swap camera head ----> 89504-0008 x1"
-        elif ft_lower == "pass with new camh" or e20_new_camh:
-            b105 = "- New camera head ----> 89504-0008 x1"
+        customer_req = str(form.get("customer_request", "")).lower() == "yes"
+        customer_req_type = (form.get("customer_request_type") or "").strip()
+
+        if customer_tpl is not None:
+            # Use template action_taken as base, but tweak part number by camera model.
+            base_action = (customer_tpl.get("action_taken") or "").strip()
+            if base_action:
+                if camera_model in ("3.3G", "3.4G"):
+                    base_action = base_action.replace("89504-0008 x1", "89504-0010 x1")
+            action_taken_str = base_action or "N/A"
         else:
+            # Default action taken from ECC rework / FT logic
+            b104 = ""
+            if ecc_rework == "3G rework":
+                b104 = (
+                    "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
+                    "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
+                    "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
+                )
+            elif ecc_rework == "3.1G old Rework":
+                b104 = (
+                    "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
+                    "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
+                    "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
+                    "- C60  change to 10nF capacitor --> 2230-0185 x1\n"
+                    "- C65,replace Zener diodes --> 2250-0057 x1\n"
+                    "- Scratch the trace and add on 4 resistor in Power IC --> 2220-0399 x4\n"
+                    "- R451 change to 4.64K ohm resistor -->        2220-0054 x1\n"
+                    "- R487, R524 change to 7.5k ohm resistor --> 2220-0056 x2"
+                )
+            elif ecc_rework == "3.1G new Rework":
+                b104 = (
+                    "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n"
+                    "- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n"
+                    "- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n"
+                    "- C60  change to 10nF capacitor --> 2230-0185 x1\n"
+                    "- C65,replace Zener diodes --> 2250-0057 x1\n"
+                    "- R15, R18, R19, R20, added 4.7K ohm resistor --> 2220-0279 x4\n"
+                    "- R451 change to 4.64K ohm resistor -->        2220-0054 x1"
+                )
             b105 = ""
-        if unable and camera_model == "3.1G New":
-            b106 = "- PCBA ---> 89504-0007 x1"
-        elif unable and camera_model in ("3.3G", "3.4G"):
-            b106 = "- PCBA ---> 89504-0010 x1"
-        else:
+            # Original Excel rule:
+            # IF(B20="Pass with swap camh","- Swap camera head ----> 89504-0008 x1",
+            #  IF(B20="PASS with new camh","- New camera head ----> 89504-0008 x1",
+            #    IF(E20="new camh","- New camera head ----> 89504-0008 x1","")))
+            if ft_lower == "pass with swap camh":
+                b105 = "- Swap camera head ----> 89504-0008 x1"
+            elif ft_lower == "pass with new camh" or e20_new_camh:
+                b105 = "- New camera head ----> 89504-0008 x1"
             b106 = ""
-        action_parts = [p for p in (b104, b105, b106) if p]
-        action_taken_str = "\n".join(action_parts) if action_parts else "N/A"
+            if unable and camera_model == "3.1G New":
+                b106 = "- PCBA ---> 89504-0007 x1"
+            elif unable and camera_model in ("3.3G", "3.4G"):
+                b106 = "- PCBA ---> 89504-0010 x1"
+
+            action_parts = [p for p in (b104, b105, b106) if p]
+            # E18 = PCBA ATS component cause, C20 = FT If fail, component change → component lines from 3.1G lookup
+            e18 = (form.get("component_cause_ats") or "").strip()
+            c20 = (form.get("ft_fail_component_change") or "").strip()
+            if e18 or c20:
+                ref_to_part = _load_31g_component_lookup()
+                component_lines = _build_component_action_lines(e18, c20, ref_to_part)
+                if component_lines:
+                    action_parts.append(component_lines)
+            action_taken_str = "\n".join(action_parts) if action_parts else "N/A"
 
         # 13. Countermeasure – VLOOKUP(B24, A111:B119); exact keys and paragraph text from database.
         _fa_camh_to_db_key = {
