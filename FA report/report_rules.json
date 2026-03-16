@@ -374,6 +374,75 @@
         "text": "Based on failure analysis, the RMA unit is No Problem Found (NPF)."
       }
     ]
+  },
+  "report_context": {
+    "action_taken": {
+      "ecc_rework": {
+        "3G rework": "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n",
+        "3.1G old Rework": "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n- C60  change to 10nF capacitor --> 2230-0185 x1\n- C65,replace Zener diodes --> 2250-0057 x1\n- Scratch the trace and add on 4 resistor in Power IC --> 2220-0399 x4\n- R451 change to 4.64K ohm resistor -->        2220-0054 x1\n- R487, R524 change to 7.5k ohm resistor --> 2220-0056 x2",
+        "3.1G new Rework": "- R89, R91, R97, R98 change to 10kohm resistor --> 2220-0057 x4\n- R93, R95, R99, R100 change to 100kohm resistor --> 2220-0060 x4\n- C112, C113, C114, C116 added 10nF capacitor --> 2230-0014 x4 \n- C60  change to 10nF capacitor --> 2230-0185 x1\n- C65,replace Zener diodes --> 2250-0057 x1\n- R15, R18, R19, R20, added 4.7K ohm resistor --> 2220-0279 x4\n- R451 change to 4.64K ohm resistor -->        2220-0054 x1"
+      },
+      "ft_camh": {
+        "pass with swap camh": "- Swap camera head ----> 89504-0008 x1",
+        "pass with new camh": "- New camera head ----> 89504-0008 x1"
+      },
+      "pcba_replacement": {
+        "3.1G New": "- PCBA ---> 89504-0007 x1",
+        "3.3G": "- PCBA ---> 89504-0010 x1",
+        "3.4G": "- PCBA ---> 89504-0010 x1"
+      },
+      "part_number_override": {
+        "from": "89504-0008 x1",
+        "to": "89504-0010 x1",
+        "camera_models": ["3.3G", "3.4G"]
+      }
+    },
+    "countermeasure": {
+      "fa_camh_key_mapping": {
+        "<=2 segment and 89504-0004": "<=2 segment and 89504-0004",
+        "<=2 segment and 89504-0004 to 89504-00085": "<=2 segment and 89504-0004 to 89504-00085",
+        "HCTE Fail": "HCTE Fail",
+        "Old CCD fail": "Old CCD fail",
+        "Line between segment": "Line Between Segment",
+        "Whole segment": "Whole Segment",
+        "White segment": "White segment",
+        "<=2 segment": "<=2 segment",
+        "Whole Segment (5V Cap)": "Whole Segment (5V Cap)"
+      },
+      "texts": {
+        "<=2 segment and 89504-0004": "1.Reduce speed of dispenser during wirebond encapsulation process to minimize any risk/stress on the wirebond\nResult: Speed had been reduced from 4mm/sec to 1mm/sec.\n\n2.Reduce pressure of ionizing blowing to minimize the pressure given to the wirebond during ionizing blowing\nResult: Ionizing pressure had been reduced from 0.03 to 0.02mPa\n\n3.  Improve encapsulation process by adding adhesion on the wirebond pad\nResult: Adhesion process implemented on Jan'21 and start to ship on Feb'21\n\n4. Electromigration fix implemented and ship on Jun'22 and and CCD S/ N start by 89504-00085XXX. ",
+        "<=2 segment and 89504-0004 to 89504-00085": "1. change the capacitor (C60) to 10uF (Part ID: 2230-0185)\n2. change the resistors (R89, R91, R97, R98) to 10kohm (Part ID: 2220-0057)\n3. change the resistors (R93, R95, R99, R100) to 100kohm (Part ID: 2220-0060)\n4. add capacitors with 10nF (Part ID: 2230-0014) to empty footprint C112, C113, C114, C116\nable to reduce the switching effect of the VDDF and VDDR to the +20V. Thus, improve the stability of +20V voltage and the current drawn by the CCD's VOD bus.\n\n5. Electromigration fix implemented and ship on Jun'22 and and CCD S/ N start by 89504-00085XXX. ",
+        "HCTE Fail": " 1. Using additional  HTCE measurement methods at Functional Test to filter those CCD fall below 0.9. Our main goal is  to improve CCD quality. ",
+        "Old CCD fail": "1. Will disassemble al the cover to check wafer trace if the CAMH is under good condition.\n2. Using additional  HTCE measurement methods at Functional Test to filter those CCD fall below 0.9. Our main goal is  to improve CCD quality. ",
+        "Line Between Segment": "1. Collect data of IC damaged/degradation for within warranty unit and feedback to supplier and RnD team",
+        "Whole Segment": "1. Implemented the CCD Capacitor (C443 and C444) to the high voltage rating at 17 Oct 2023 and the serial number start by  9704-0111769, 3.3G CAMH start by 89504-0008 9318\n\n2. Proceed CD&A test aging test to 6 hour\n3. Implemented the CCD Capacitor to the high voltage rating and reheat the capacitor before rework\n4. capacitor pre-heating up to 150degC before mount/solder to the CCD + solder cleaning staging to allow CCD/cap back to normal temperature to minimize thermal shock impact start by 7 Dec 23\n5. The CCD that implement and build by supplier 3.1G camera head S/N start by 89504-00089360, 3.3G camera head s/n by 89504-00133802 and camera card start by 9704-0113401(5 March 2024).",
+        "<=2 segment": "1. Collect data of IC damaged/degradation for within warranty unit and feedback to supplier and RnD team",
+        "White segment": "1. Collect data of IC damaged/degradation for within warranty unit and feedback to supplier and RnD team",
+        "Whole Segment (5V Cap)": "1. fulling resecreening all the capacitor on the CCD board.\n2. 5V CCD cap change to flexi cap - start by 10 Feb 25, 3.3G: 9704-0115871, and for refurbish camera 3.1G CCD: 89504-0008C081 and 3.3G CCD: 89504-00136910"
+      }
+    },
+    "scintillator_labels": {
+      "Good": "No Problem Found",
+      "Aging": "Aging",
+      "Gap": "Gap",
+      "Bubble": "Bubble",
+      "Bent": "Bent"
+    },
+    "summary_field_labels": [
+      "Camera Main Issue",
+      "Camera - Head",
+      "Camera - PCBA",
+      "Scintillator",
+      "Root Cause Categories",
+      "Failure Analysis / Root Cause",
+      "Disposition",
+      "Disposition on RMA unitRequired",
+      "Reason to Scrap",
+      "Need Replacement",
+      "Replaced By",
+      "Action Taken on Repairing",
+      "Countermeasure"
+    ]
   }
 }
 

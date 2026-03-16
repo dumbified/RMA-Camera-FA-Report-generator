@@ -4,6 +4,8 @@ import os
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from db_config_fa import get_fa_mysql_config
+
 
 def _bool_to_str(value: bool) -> str:
     return "Yes" if value else "No"
@@ -16,35 +18,59 @@ def _ensure_directory(path: str) -> None:
 
 
 def _normalize_newlines(s: str) -> str:
-    """Turn literal \\n in strings (e.g. from JSON) into real newlines for display."""
+    """Turn literal \\n in strings (e.g. from JSON/DB) into real newlines for display."""
     return (s or "").replace("\\n", "\n")
 
 
-def _load_31g_component_lookup() -> dict[str, tuple[str, str, str]]:
+def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> ttk.Checkbutton:
+    """Label on left, checkbox (small box) on right. Returns the Checkbutton for state control."""
+    f = ttk.Frame(parent)
+    f.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+    ttk.Label(f, text=text).pack(side="left")
+    cb = ttk.Checkbutton(f, variable=variable)
+    cb.pack(side="right", padx=(8, 0))
+    return cb
+
+
+def _load_31g_component_from_db() -> dict[str, tuple[str, str, str]]:
     """
-    Load 3.1G component CSV (MfgComment, PartID, Description).
-    Return mapping: component_ref_lower -> (PartID, Description, display_ref).
-    Keys are lowercased for case-insensitive lookup; display_ref is the ref as in CSV.
+    Load 3.1G component lookup from MySQL (Component, partID, Description).
+    Return mapping: component_ref_lower -> (part_id, desc, display_ref).
     """
-    path = os.path.join(os.path.dirname(__file__), "3.1G component.csv")
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return {}
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return {}
+
     ref_to_part: dict[str, tuple[str, str, str]] = {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                mfg = (row.get("MfgComment") or "").strip()
-                part_id = (row.get("PartID") or "").strip()
-                desc = (row.get("Description") or "").strip()
-                if not mfg or not part_id:
-                    continue
-                for ref in (r.strip() for r in mfg.split(",")):
-                    ref = ref.strip()
-                    if ref:
-                        key = ref.lower()
-                        if key not in ref_to_part:
-                            ref_to_part[key] = (part_id, desc, ref)
-    except (OSError, csv.Error):
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT Component, partID, Description FROM `{cfg.component_31g_table}`")
+        for component, part_id, desc in cursor.fetchall():
+            component = (component or "").strip()
+            part_id = (part_id or "").strip()
+            desc = (desc or "").strip()
+            if not component or not part_id:
+                continue
+            key = component.lower()
+            if key not in ref_to_part:
+                ref_to_part[key] = (part_id, desc, component)
+    except mysql.connector.Error:
         pass
+    finally:
+        conn.close()
     return ref_to_part
 
 
@@ -54,14 +80,11 @@ def _build_component_action_lines(
     """
     Build Action Taken lines from E18 (PCBA ATS component cause) and C20 (FT If fail, component change).
     Format per line: {refs} {Description} {PartID}----->{count}
-    e.g. "F1 FUSE,SMD,SLOW-BLOW,2A,125V,OMNI-BLOK 2215-0026----->1"
-    Lookup is case-insensitive.
     """
     combined = f"{e18},{c20}".replace("\n", " ").replace("\r", " ")
     refs = [r.strip() for r in combined.split(",") if r.strip()]
     if not refs or not ref_to_part:
         return ""
-    # group by (part_id, desc) -> list of display_refs
     group_key_to_refs: dict[tuple[str, str], list[str]] = {}
     for ref in refs:
         key = ref.lower()
@@ -80,14 +103,417 @@ def _build_component_action_lines(
     return "\n".join(lines)
 
 
-def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> ttk.Checkbutton:
-    """Label on left, checkbox (small box) on right."""
-    f = ttk.Frame(parent)
-    f.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
-    ttk.Label(f, text=text).pack(side="left")
-    cb = ttk.Checkbutton(f, variable=variable)
-    cb.pack(side="right", padx=(8, 0))
-    return cb
+def _fetch_screening_for_vit(vit_id: str) -> tuple[str, str, str] | None:
+    """
+    Fetch SCREENING PCBA, SCREENING CAMH, SCREENING SCINTILLATOR for a VIT from rma_cam.
+    Maps DB values to form values:
+      - PCBA bad -> "Cannot Ping"
+      - CAMH bad -> "White Segment"
+      - Scintillator bad -> "Aging"
+    Returns (pcba_val, camh_val, scintillator_val) or None if not found.
+    """
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+    col_sets = [
+        ("`SCREENING PCBA`", "`SCREENING CAMH`", "`SCREENING SCINTILLATOR`"),
+        ("SCREENING_PCBA", "SCREENING_CAMH", "SCREENING_SCINTILLATOR"),
+        ("screening_pcba", "screening_camh", "screening_scintillator"),
+    ]
+    row = None
+    try:
+        cursor = conn.cursor()
+        for pcba_col, camh_col, scint_col in col_sets:
+            try:
+                cursor.execute(
+                    f"SELECT {pcba_col}, {camh_col}, {scint_col} "
+                    f"FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                    (vit_id,),
+                )
+                row = cursor.fetchone()
+                break
+            except mysql.connector.Error:
+                continue
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    pcba_raw = (row[0] or "").strip().lower()
+    camh_raw = (row[1] or "").strip().lower()
+    scint_raw = (row[2] or "").strip().lower()
+
+    PCBA_VALUES = ["Perfect", "Line between segment", "Cannot Ping"]
+    CAMH_VALUES = ["Whole Segment", "Perfect", "<= 2 segment", "Line Between Segment", "White Segment", "Multiple Segment Die"]
+    SCINT_VALUES = ["Good", "Aging", "Gap", "Bubble", "Bent"]
+
+    def _map_pcba(v: str) -> str:
+        if v in ("bad", "fail", "failed"):
+            return "Cannot Ping"
+        for opt in PCBA_VALUES:
+            if opt.lower() == v or v in opt.lower():
+                return opt
+        return PCBA_VALUES[0]
+
+    def _map_camh(v: str) -> str:
+        if v in ("bad", "fail", "failed"):
+            return "White Segment"
+        for opt in CAMH_VALUES:
+            if opt.lower() == v or v in opt.lower():
+                return opt
+        return CAMH_VALUES[1]
+
+    def _map_scint(v: str) -> str:
+        if v in ("bad", "fail", "failed"):
+            return "Aging"
+        for opt in SCINT_VALUES:
+            if opt.lower() == v or v in opt.lower():
+                return opt
+        return SCINT_VALUES[0]
+
+    return (_map_pcba(pcba_raw), _map_camh(camh_raw), _map_scint(scint_raw))
+
+
+def _fetch_ft_result_for_vit(vit_id: str) -> str | None:
+    """
+    Fetch RESERVATIONS CAMH for a VIT from rma_cam and map it to FT Result value:
+
+      - "Receive"       -> "Pass with new camh"
+      - "Receive swap"  -> "Pass with swap camh"
+      - "Repaired"      -> "Pass with repaired camh"
+      - "N/A" (or empty)-> "Pass with ori camh"
+    """
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    col_candidates = [
+        "`RESERVATIONS CAMH`",
+        "RESERVATIONS_CAMH",
+        "reservations_camh",
+    ]
+    row = None
+    try:
+        cursor = conn.cursor()
+        for col in col_candidates:
+            try:
+                cursor.execute(
+                    f"SELECT {col} FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                    (vit_id,),
+                )
+                row = cursor.fetchone()
+                break
+            except mysql.connector.Error:
+                continue
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row or not row[0]:
+        return None
+
+    raw = str(row[0]).strip().lower()
+    if not raw or raw in ("n/a", "na"):
+        return "Pass with ori camh"
+    if raw.startswith("receive swap"):
+        return "Pass with swap camh"
+    if raw.startswith("receive"):
+        return "Pass with new camh"
+    if raw.startswith("repaired"):
+        return "Pass with repaired camh"
+
+    return None
+
+
+def _fetch_reservations_camh_raw(vit_id: str) -> str | None:
+    """Fetch raw RESERVATIONS CAMH S/N for VIT from rma_cam (e.g. '87004', '8B811') for last-4 suffix. Returns None if not found."""
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+    col_candidates = [
+        "`RESERVATIONS CAMH S/N`",
+        "RESERVATIONS_CAMH_SN",
+        "reservations_camh_sn",
+    ]
+    row = None
+    try:
+        cursor = conn.cursor()
+        for col in col_candidates:
+            try:
+                cursor.execute(
+                    f"SELECT {col} FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                    (vit_id,),
+                )
+                row = cursor.fetchone()
+                break
+            except mysql.connector.Error:
+                continue
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or row[0] is None:
+        return None
+    return str(row[0]).strip()
+
+
+def _infer_camera_model_from_db(vit_id: str) -> str | None:
+    """
+    Infer camera model (3G, 3.1G Old, 3.1G New, 3.3G, 3.4G) from UNIT S/N and CAMH S/N in rma_cam.
+
+    Rules:
+      - UNIT S/N starts with 9504         -> 3G
+      - UNIT S/N starts with 9704-007/009:
+          CAMH S/N starts with 89504-0005 -> 3.1G Old
+          CAMH S/N starts with 89404-0007 -> 3.1G New
+      - UNIT S/N starts with 9704-011     -> 3.3G
+      - UNIT S/N starts with 9704-013     -> 3.4G
+    """
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    unit_cols = ["`UNIT S/N`", "UNIT_SN", "unit_sn"]
+    camh_cols = ["`CAMH S/N`", "CAMH_SN", "camh_sn"]
+    row = None
+    try:
+        cursor = conn.cursor()
+        for u_col in unit_cols:
+            for c_col in camh_cols:
+                try:
+                    cursor.execute(
+                        f"SELECT {u_col}, {c_col} FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                        (vit_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        break
+                except mysql.connector.Error:
+                    continue
+            if row:
+                break
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row or not row[0]:
+        return None
+
+    unit_sn = str(row[0]).strip()
+    camh_sn = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+
+    if unit_sn.startswith("9504"):
+        return "3G"
+    if unit_sn.startswith("9704-007") or unit_sn.startswith("9704-009"):
+        if camh_sn.startswith("89504-0005"):
+            return "3.1G Old"
+        if camh_sn.startswith("89404-0007"):
+            return "3.1G New"
+        return "3.1G Old"
+    if unit_sn.startswith("9704-011"):
+        return "3.3G"
+    if unit_sn.startswith("9704-013"):
+        return "3.4G"
+    return None
+
+
+def _load_camh_base_sn_from_db() -> dict[str, str]:
+    """Load camera_group -> base_sn from fa_camh_base_sn. Fallback to defaults if table missing."""
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return {"3G_31G": "89504-0008", "33G_34G": "89504-0010"}
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return {"3G_31G": "89504-0008", "33G_34G": "89504-0010"}
+    result: dict[str, str] = {}
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT camera_group, base_sn FROM `{cfg.camh_base_sn_table}`")
+        for group, base_sn in cursor.fetchall():
+            if group and base_sn:
+                result[str(group).strip()] = str(base_sn).strip()
+    except mysql.connector.Error:
+        pass
+    finally:
+        conn.close()
+    if not result:
+        return {"3G_31G": "89504-0008", "33G_34G": "89504-0010"}
+    return result
+
+
+def _get_dynamic_camh_sn(camera_model: str, ft_result: str, vit_id: str) -> tuple[str, str]:
+    """
+    Return (sn_31g, sn_33g) for use in Action Taken.
+    Base S/N loaded from fa_camh_base_sn (3G_31G, 33G_34G). If FT result is Pass with new camh or
+    Pass with swap camh, append last 4 chars of RESERVATIONS CAMH S/N to each base.
+    """
+    bases = _load_camh_base_sn_from_db()
+    base_31g = bases.get("3G_31G", "89504-0008")
+    base_33g = bases.get("33G_34G", "89504-0010")
+    ft_lower = (ft_result or "").strip().lower()
+    vit_id = (vit_id or "").strip()
+    if ft_lower in ("pass with new camh", "pass with swap camh") and vit_id:
+        raw = _fetch_reservations_camh_raw(vit_id)
+        if raw:
+            suffix = raw[-4:] if len(raw) >= 4 else raw
+            return (base_31g + suffix, base_33g + suffix)
+    return (base_31g, base_33g)
+
+
+def _replace_dynamic_sn_in_action_text(text: str, sn_31g: str, sn_33g: str) -> str:
+    """Replace fixed 89504-0008 and 89504-0010 in action taken text with dynamic S/N."""
+    if not text:
+        return text
+    return text.replace("89504-0008", sn_31g).replace("89504-0010", sn_33g)
+
+
+def _load_report_context_from_db() -> dict | None:
+    """Load report_context from MySQL. Returns the context dict or None."""
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT context_data FROM `{cfg.report_data_table}` "
+            f"WHERE item_type = 'context' AND context_key = 'report_context'"
+        )
+        row = cursor.fetchone()
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    data = row[0]
+    if isinstance(data, str):
+        return json.loads(data)
+    return data
+
+
+def _load_customer_request_templates_from_db() -> dict | None:
+    """Load customer request templates from MySQL. Returns dict of template_key -> template_data or None."""
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    templates: dict = {}
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT template_key, template_data FROM `{cfg.customer_request_templates_table}`"
+        )
+        for tpl_key, tpl_data in cursor.fetchall():
+            if isinstance(tpl_data, str):
+                tpl_data = json.loads(tpl_data)
+            templates[tpl_key or ""] = tpl_data or {}
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+    return templates if templates else None
 
 
 def _dropdown(parent, variable: tk.StringVar, values: list, row: int, label: str, col: int = 0, width: int = 20) -> ttk.Combobox:
@@ -106,9 +532,100 @@ def _textbox(parent, label: str, height: int, row: int, col: int = 0) -> tk.Text
     return w
 
 
+def _load_report_rules_from_db():
+    """
+    Load FA report rules from MySQL and return the same structure as report_rules.json:
+
+    {
+      "order": [...],
+      "sections": {
+        "section_name": [
+          {"id": "...", "when": {...}, "text": "..."},
+          ...
+        ],
+        ...
+      },
+    }
+    """
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError as exc:  # pragma: no cover - environment-specific
+        messagebox.showerror(
+            "Report rules",
+            "mysql-connector-python is not installed.\nRun: pip install mysql-connector-python",
+        )
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error as exc:  # pragma: no cover - runtime connectivity
+        messagebox.showerror("Report rules", f"Could not connect to MySQL:\n{exc}")
+        return None
+
+    sections_sql = f"""
+        SELECT id, name
+        FROM `{cfg.sections_table}`
+        ORDER BY display_order ASC, id ASC
+    """
+    rules_sql = f"""
+        SELECT section_id, rule_key, conditions, text, rule_order
+        FROM `{cfg.report_data_table}`
+        WHERE item_type = 'rule'
+        ORDER BY section_id ASC, rule_order ASC, id ASC
+    """
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sections_sql)
+        sections_rows = cursor.fetchall()
+
+        cursor.execute(rules_sql)
+        rules_rows = cursor.fetchall()
+    except mysql.connector.Error as exc:
+        conn.close()
+        messagebox.showerror("Report rules", f"Failed to query rules tables:\n{exc}")
+        return None
+
+    conn.close()
+
+    # Build name -> id mapping and ordered section list
+    order = []
+    section_id_to_name = {}
+    for section_id, name in sections_rows:
+        section_id_to_name[section_id] = name
+        order.append(name)
+
+    sections: dict[str, list[dict]] = {name: [] for name in order}
+
+    for section_id, rule_key, conditions_json, text, rule_order in rules_rows:
+        name = section_id_to_name.get(section_id)
+        if not name:
+            continue
+        try:
+            # conditions_json is a JSON string or native JSON type depending on connector
+            if isinstance(conditions_json, str):
+                conditions = json.loads(conditions_json)
+            else:
+                conditions = conditions_json
+        except Exception:
+            conditions = {}
+        sections.setdefault(name, []).append(
+            {"id": rule_key, "when": conditions or {}, "text": text or ""}
+        )
+
+    return {"order": order, "sections": sections}
+
+
 def build_failure_form_gui() -> None:
     root = tk.Tk()
-    root.title("Camera Failure Analysis Form")
+    root.title("Camera Failure Analysis Form (Advanced / DB rules)")
     root.geometry("900x820")
 
     main = ttk.Frame(root, padding=12)
@@ -176,10 +693,30 @@ def build_failure_form_gui() -> None:
 
     row = 0
 
-    # --- VIT ID [single-line entry] ---
+    # --- VIT ID [user types; Enter or FocusOut fetches screening from rma_cam] ---
     ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
     vit_id_entry = ttk.Entry(form_frame, textvariable=vit_id_var, width=20)
     vit_id_entry.grid(row=row, column=1, sticky="ew", pady=2)
+
+    def _on_vit_confirm(_e=None) -> None:
+        vit = (vit_id_var.get() or "").strip()
+        if not vit:
+            return
+        screening = _fetch_screening_for_vit(vit)
+        if screening:
+            pcba_var.set(screening[0])
+            camh_var.set(screening[1])
+            scintillator_var.set(screening[2])
+        ft_result = _fetch_ft_result_for_vit(vit)
+        if ft_result:
+            ft_result_var.set(ft_result)
+        inferred_model = _infer_camera_model_from_db(vit)
+        if inferred_model:
+            camera_model_var.set(inferred_model)
+        refresh_interaction_states()
+
+    vit_id_entry.bind("<Return>", _on_vit_confirm)
+    vit_id_entry.bind("<FocusOut>", _on_vit_confirm)
     row += 1
 
     # --- If NPF and all reworked? [checkbox right] ---
@@ -318,63 +855,6 @@ def build_failure_form_gui() -> None:
     component_category_cb = _dropdown(form_frame, component_category_var, ["", "IC", "Capacitor", "Inductor"], row, "Component Category:")
     row += 1
 
-    def _clear_textbox(w: tk.Text) -> None:
-        prev_state = str(w.cget("state"))
-        if prev_state == "disabled":
-            w.config(state="normal")
-        w.delete("1.0", "end")
-        if prev_state == "disabled":
-            w.config(state="disabled")
-
-    def _set_widget_var(widget: tk.Widget, option: str, value) -> None:
-        var_name = str(widget.cget(option) or "")
-        if var_name:
-            root.setvar(var_name, value)
-
-    def update_screening_camh_fields() -> None:
-        camh_val = (camh_var.get() or "").strip()
-        if camh_val == "" or camh_val == "Perfect":
-            ecc_rework_var.set("")
-            good_camh_var.set("")
-            bad_camh_var.set("")
-            can_repair_bad_camh_var.set("")
-            _clear_textbox(which_dvm_fail_text)
-            _clear_textbox(component_cause_text)
-            ecc_rework_cb.config(state="disabled")
-            good_camh_cb.config(state="disabled")
-            bad_camh_cb.config(state="disabled")
-            can_repair_bad_camh_cb.config(state="disabled")
-            which_dvm_fail_text.config(state="disabled")
-            component_cause_text.config(state="disabled")
-        else:
-            good_camh_var.set("")
-            good_camh_cb.config(state="disabled")
-            ecc_rework_cb.config(state="readonly")
-            bad_camh_cb.config(state="readonly")
-            can_repair_bad_camh_cb.config(state="readonly")
-            which_dvm_fail_text.config(state="normal")
-            component_cause_text.config(state="normal")
-
-    camh_screening_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
-
-    def update_pcba_ats_fail_fields() -> None:
-        if pcba_ats_result_var.get() == "Fail":
-            ats_result_if_failed_text.config(state="normal")
-            can_repair_ats_cb.config(state="readonly")
-            component_cause_ats_text.config(state="normal")
-            component_category_cb.config(state="readonly")
-        else:
-            _clear_textbox(ats_result_if_failed_text)
-            _set_widget_var(can_repair_ats_cb, "textvariable", "")
-            _clear_textbox(component_cause_ats_text)
-            _set_widget_var(component_category_cb, "textvariable", "")
-            ats_result_if_failed_text.config(state="disabled")
-            can_repair_ats_cb.config(state="disabled")
-            component_cause_ats_text.config(state="disabled")
-            component_category_cb.config(state="disabled")
-
-    pcba_ats_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
-
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
     row += 1
 
@@ -410,29 +890,6 @@ def build_failure_form_gui() -> None:
         "IF pass, which CAMH to use?",
     )
     row += 1
-
-    def update_ft_fail_fields() -> None:
-        r = ft_result_var.get() or ""
-        if r == "Fail":
-            ft_fail_component_change_text.config(state="normal")
-            can_repair_ft_cb.config(state="readonly")
-            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
-            ft_pass_which_camh_cb.config(state="disabled")
-        elif r.startswith("Pass"):
-            _clear_textbox(ft_fail_component_change_text)
-            _set_widget_var(can_repair_ft_cb, "textvariable", "")
-            ft_fail_component_change_text.config(state="disabled")
-            can_repair_ft_cb.config(state="disabled")
-            ft_pass_which_camh_cb.config(state="readonly")
-        else:
-            _clear_textbox(ft_fail_component_change_text)
-            _set_widget_var(can_repair_ft_cb, "textvariable", "")
-            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
-            ft_fail_component_change_text.config(state="disabled")
-            can_repair_ft_cb.config(state="disabled")
-            ft_pass_which_camh_cb.config(state="disabled")
-
-    ft_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
 
     ttk.Separator(form_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
     row += 1
@@ -499,6 +956,86 @@ def build_failure_form_gui() -> None:
     bad_camh_assemble_bubble_cb = _checkbox_row(form_frame, "Bad CAMH did assemble? got bubble?", bad_camh_assemble_bubble_var, row)
     row += 1
 
+    def _clear_textbox(w: tk.Text) -> None:
+        prev_state = str(w.cget("state"))
+        if prev_state == "disabled":
+            w.config(state="normal")
+        w.delete("1.0", "end")
+        if prev_state == "disabled":
+            w.config(state="disabled")
+
+    def _set_widget_var(widget: tk.Widget, option: str, value) -> None:
+        var_name = str(widget.cget(option) or "")
+        if var_name:
+            root.setvar(var_name, value)
+
+    def update_screening_camh_fields() -> None:
+        camh_val = (camh_var.get() or "").strip()
+        if camh_val == "" or camh_val == "Perfect":
+            ecc_rework_var.set("")
+            good_camh_var.set("")
+            bad_camh_var.set("")
+            can_repair_bad_camh_var.set("")
+            _clear_textbox(which_dvm_fail_text)
+            _clear_textbox(component_cause_text)
+            ecc_rework_cb.config(state="disabled")
+            good_camh_cb.config(state="disabled")
+            bad_camh_cb.config(state="disabled")
+            can_repair_bad_camh_cb.config(state="disabled")
+            which_dvm_fail_text.config(state="disabled")
+            component_cause_text.config(state="disabled")
+        else:
+            good_camh_var.set("")
+            good_camh_cb.config(state="disabled")
+            ecc_rework_cb.config(state="readonly")
+            bad_camh_cb.config(state="readonly")
+            can_repair_bad_camh_cb.config(state="readonly")
+            which_dvm_fail_text.config(state="normal")
+            component_cause_text.config(state="normal")
+
+    camh_screening_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
+
+    def update_pcba_ats_fail_fields() -> None:
+        if pcba_ats_result_var.get() == "Fail":
+            ats_result_if_failed_text.config(state="normal")
+            can_repair_ats_cb.config(state="readonly")
+            component_cause_ats_text.config(state="normal")
+            component_category_cb.config(state="readonly")
+        else:
+            _clear_textbox(ats_result_if_failed_text)
+            _set_widget_var(can_repair_ats_cb, "textvariable", "")
+            _clear_textbox(component_cause_ats_text)
+            _set_widget_var(component_category_cb, "textvariable", "")
+            ats_result_if_failed_text.config(state="disabled")
+            can_repair_ats_cb.config(state="disabled")
+            component_cause_ats_text.config(state="disabled")
+            component_category_cb.config(state="disabled")
+
+    pcba_ats_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
+
+    def update_ft_fail_fields() -> None:
+        r = ft_result_var.get() or ""
+        if r == "Fail":
+            ft_fail_component_change_text.config(state="normal")
+            can_repair_ft_cb.config(state="readonly")
+            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
+            ft_pass_which_camh_cb.config(state="disabled")
+        elif r.startswith("Pass"):
+            _clear_textbox(ft_fail_component_change_text)
+            _set_widget_var(can_repair_ft_cb, "textvariable", "")
+            ft_fail_component_change_text.config(state="disabled")
+            can_repair_ft_cb.config(state="disabled")
+            ft_pass_which_camh_cb.config(state="readonly")
+        else:
+            _clear_textbox(ft_fail_component_change_text)
+            _set_widget_var(can_repair_ft_cb, "textvariable", "")
+            _set_widget_var(ft_pass_which_camh_cb, "textvariable", "")
+            ft_fail_component_change_text.config(state="disabled")
+            can_repair_ft_cb.config(state="disabled")
+            ft_pass_which_camh_cb.config(state="disabled")
+
+    ft_result_cb.bind("<<ComboboxSelected>>", lambda e: refresh_interaction_states())
+
     def update_fa_npf_fields() -> None:
         disabled = bool(npf_final_var.get())
         if disabled:
@@ -519,7 +1056,6 @@ def build_failure_form_gui() -> None:
     def _set_form_inputs_locked(parent: tk.Widget, locked: bool, skip: set | None = None) -> None:
         for child in parent.winfo_children():
             if skip and child in skip:
-                _set_form_inputs_locked(child, locked, skip)
                 continue
             if isinstance(child, tk.Text):
                 if locked:
@@ -593,14 +1129,14 @@ def build_failure_form_gui() -> None:
     def collect_data() -> dict:
         pcba_can_repair_val = (can_repair_ats_var.get() or "").strip().lower()
         ft_can_repair_val = (can_repair_ft_var.get() or "").strip().lower()
-        data = {
+        return {
             "vit_id": vit_id_var.get().strip(),
             "npf_all_reworked": _bool_to_str(npf_all_reworked_var.get()),
             "customer_request": _bool_to_str(customer_request_var.get()),
             "customer_request_type": customer_request_type_var.get(),
             "camera_model": camera_model_var.get(),
             "burnt": _bool_to_str(burnt_var.get()),
-            # Visual check status used by report_rules.json
+            # Visual check status used by rules
             "visual_check": "Got missing/burnt" if burnt_var.get() else "No missing/No Burnt",
             "power_on_unit": power_on_unit_var.get(),
             "remark_missing_burnt": get_text(remark_missing_burnt_text),
@@ -622,13 +1158,13 @@ def build_failure_form_gui() -> None:
             "ft_fail_component_change": get_text(ft_fail_component_change_text),
             "can_repair_ft": can_repair_ft_var.get(),
             "ft_pass_which_camh": ft_pass_which_camh_var.get(),
-            # booleans kept as real True/False where JSON rules expect them
+            # booleans kept as real True/False where JSON/DB rules expect them
             "npf_final": npf_final_var.get(),
             "camh_final": camh_final_var.get(),
             "pcba_final": pcba_final_var.get(),
             "scrap_why": scrap_why_var.get(),
             "bad_camh_assemble_bubble": _bool_to_str(bad_camh_assemble_bubble_var.get()),
-            # Derived/alias fields used by report_rules.json
+            # Derived/alias fields used by rules
             "ats_fail_mode": get_text(ats_result_if_failed_text),
             "pcba_can_repair": pcba_can_repair_val,
             "pcba_component_category": component_category_var.get(),
@@ -646,49 +1182,12 @@ def build_failure_form_gui() -> None:
             # AXI matches: IF(OR(D18="scrap",D20="scrap"),"", "Perform testing AXI machine --> PASS")
             "axi_performed": pcba_can_repair_val != "scrap" and ft_can_repair_val != "scrap",
         }
-        camh_val = (data.get("camh") or "").strip()
-        if camh_val == "" or camh_val == "Perfect":
-            data["ecc_rework"] = ""
-            data["good_camh"] = ""
-            data["bad_camh"] = ""
-            data["which_dvm_fail"] = ""
-            data["can_repair_bad_camh"] = ""
-            data["component_cause"] = ""
-            data["bad_camh_condition"] = ""
-            data["dvm_result"] = ""
-        if (data.get("pcba_ats_result") or "").strip() != "Fail":
-            data["ats_result_if_failed"] = ""
-            data["can_repair_ats"] = ""
-            data["component_cause_ats"] = ""
-            data["component_category"] = ""
-            data["ats_fail_mode"] = ""
-            data["pcba_can_repair"] = ""
-            data["pcba_component_category"] = ""
-            data["pcba_scrap_component"] = ""
-            data["pcba_component_name"] = ""
-        ft_res = (data.get("ft_result") or "").strip()
-        if ft_res == "Fail":
-            data["ft_pass_which_camh"] = ""
-            data["ft_pass_camh"] = ""
-        else:
-            data["ft_fail_component_change"] = ""
-            data["can_repair_ft"] = ""
-            data["ft_can_repair"] = ""
-            data["ft_fail_component"] = ""
-        if bool(data.get("npf_final")):
-            data["camh_final"] = ""
-            data["pcba_final"] = ""
-            data["scrap_why"] = ""
-            data["fa_camh"] = ""
-            data["fa_pcba"] = ""
-            data["pcba_scrap_why"] = ""
-            data["bad_camh_assemble_bubble"] = "No"
-        return data
 
     def clear_form() -> None:
         vit_id_var.set("")
         npf_all_reworked_var.set(False)
         customer_request_var.set(False)
+        customer_request_type_var.set("")
         camera_model_var.set("3.3G")
         burnt_var.set(False)
         power_on_unit_var.set("")
@@ -716,26 +1215,6 @@ def build_failure_form_gui() -> None:
         pcba_final_var.set("")
         scrap_why_var.set("")
         bad_camh_assemble_bubble_var.set(False)
-
-    def _load_report_rules():
-        """Load report_rules.json from the project directory."""
-        rules_path = os.path.join(os.path.dirname(__file__), "report_rules.json")
-        try:
-            with open(rules_path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            messagebox.showerror("Report rules", f"Could not load report_rules.json:\n{exc}")
-            return None
-
-    def _load_customer_request_templates() -> dict | None:
-        """Load customer_request_templates.json (customer request summary presets)."""
-        path = os.path.join(os.path.dirname(__file__), "customer_request_templates.json")
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            messagebox.showerror("Customer request", f"Could not load customer_request_templates.json:\n{exc}")
-            return None
 
     def _match_conditions(form: dict, conditions: dict) -> bool:
         """Return True if form data satisfies all key/value pairs in conditions."""
@@ -770,7 +1249,7 @@ def build_failure_form_gui() -> None:
         return True
 
     def build_report_text(form: dict) -> str:
-        rules = _load_report_rules()
+        rules = _load_report_rules_from_db()
         if not rules:
             return "No report rules available."
 
@@ -839,6 +1318,7 @@ def build_failure_form_gui() -> None:
         pcba_scrap_why = form.get("pcba_scrap_why") or ""
         ats_fail_mode = form.get("ats_fail_mode") or ""
         customer_tpl = None
+        ctx = _load_report_context_from_db() or {}
 
         # 1. Camera Main Issue – use only derived head_issue / pcba_issue (A45/A46), not NPF checkbox.
         # P/F status for key areas (matches database N42:N48).
@@ -926,9 +1406,13 @@ def build_failure_form_gui() -> None:
                 break
 
         # 4. Scintillator – report table label (A72:B76), not raw dropdown value.
-        rules = _load_report_rules()
-        ctx = (rules or {}).get("report_context", {})
-        scint_labels = ctx.get("scintillator_labels", {})
+        scint_labels = ctx.get("scintillator_labels", {}) or {
+            "Good": "No Problem Found",
+            "Aging": "Aging",
+            "Gap": "Gap",
+            "Bubble": "Bubble",
+            "Bent": "Bent",
+        }
         scintillator_field = scint_labels.get(scint, scint) if scint else ""
 
         # 5. Root Cause Categories
@@ -958,8 +1442,8 @@ def build_failure_form_gui() -> None:
         # 6. Failure Analysis / Root Cause
         failure_root_cause = failure_body
 
-        # Customer request templates override (from customer_request_templates.json)
-        templates = _load_customer_request_templates()
+        # Customer request templates override (from DB)
+        templates = _load_customer_request_templates_from_db()
         cust_req_type = (form.get("customer_request_type") or "").strip()
         label_to_key = {
             "Rework": "customer request rework",
@@ -994,10 +1478,16 @@ def build_failure_form_gui() -> None:
             or ft_result in ("Pass with new camh", "Pass with swap camh")
         )
 
+        disposition = "Repair"
+        disposition_rma = disposition
+        reason_to_scrap = "N/A"
+        need_replacement = "No"
+        replaced_by = "N/A"
+        action_taken_str = "N/A"
+        countermeasure = "N/A"
+
         if customer_tpl is None:
             # Follow Excel's VLOOKUP table order: Scrap, Unable to Repair, Repair, No problem found.
-            # Special case: if Camera Main Issue is "No Problem Found", Disposition is "No problem found"
-            # and Disposition on RMA unitRequired is "Not going to repair".
             if (camera_main_issue or "").strip() == "No Problem Found":
                 disposition = "No problem found"
                 disposition_rma = "Not going to repair"
@@ -1011,10 +1501,10 @@ def build_failure_form_gui() -> None:
                 disposition = "Repair"
                 disposition_rma = disposition
 
-            # 9. Reason to Scrap – if scrapped, show only the final FA paragraph starting from "Based on (the) failure analysis"
+        # 9. Reason to Scrap – if scrapped, show only the final FA paragraph starting from "Based on (the) failure analysis"
+        if customer_tpl is None:
             if disposition == "Scrap" and failure_root_cause:
                 text = failure_root_cause
-                # Try to find the last occurrence of the FA closing prefix
                 idx = max(
                     text.rfind("Based on failure analysis"),
                     text.rfind("Based on the failure analysis"),
@@ -1027,7 +1517,7 @@ def build_failure_form_gui() -> None:
             else:
                 reason_to_scrap = "N/A"
 
-            # 10–11. Need Replacement + Replaced By – single value from first TRUE row (A95:B100).
+            # 10–11. Need Replacement + Replaced By
             ft_lower = ft_result.strip().lower() if ft_result else ""
             unable = pcba_can_repair == "unable" or ft_can_repair == "unable"
             e20_new_camh = (form.get("ft_pass_which_camh") or "").strip().lower() == "new camh"
@@ -1044,25 +1534,21 @@ def build_failure_form_gui() -> None:
                 replaced_by = "New PCBA"
             need_replacement = "Yes" if replaced_by != "N/A" else "No"
 
-        # 12. Action Taken on Repairing – CONCATENATE(B104, CHAR(10), B105, CHAR(10), B106) with exact wording.
+        # 12. Action Taken on Repairing (dynamic S/N by camera model; optional suffix from RESERVATIONS CAMH S/N)
         ecc_rework = (form.get("ecc_rework") or "").strip()
         camera_model = (form.get("camera_model") or "").strip()
-        customer_req = str(form.get("customer_request", "")).lower() == "yes"
-        customer_req_type = (form.get("customer_request_type") or "").strip()
+        ft_lower = ft_result.strip().lower() if ft_result else ""
+        unable = pcba_can_repair == "unable" or ft_can_repair == "unable"
+        e20_new_camh = (form.get("ft_pass_which_camh") or "").strip().lower() == "new camh"
+        vit_id = (form.get("vit_id") or "").strip()
+        sn_31g, sn_33g = _get_dynamic_camh_sn(camera_model, ft_result or "", vit_id)
 
         if customer_tpl is not None:
-            # Use template action_taken as base, but tweak part number by camera model.
             base_action = (customer_tpl.get("action_taken") or "").strip()
             if base_action:
-                override = ctx.get("action_taken", {}).get("part_number_override", {})
-                if camera_model in override.get("camera_models", []):
-                    base_action = base_action.replace(
-                        override.get("from", "89504-0008 x1"),
-                        override.get("to", "89504-0010 x1"),
-                    )
+                base_action = _replace_dynamic_sn_in_action_text(base_action, sn_31g, sn_33g)
             action_taken_str = base_action or "N/A"
         else:
-            # Default action taken from ECC rework / FT logic (text from report_context)
             action_ctx = ctx.get("action_taken", {})
             ecc_texts = action_ctx.get("ecc_rework", {})
             ft_camh_texts = action_ctx.get("ft_camh", {})
@@ -1080,22 +1566,33 @@ def build_failure_form_gui() -> None:
                 b106 = pcba_texts.get(camera_model, "")
 
             action_parts = [p for p in (b104, b105, b106) if p]
-            # E18 = PCBA ATS component cause, C20 = FT If fail, component change → component lines from 3.1G lookup
             e18 = (form.get("component_cause_ats") or "").strip()
             c20 = (form.get("ft_fail_component_change") or "").strip()
             if e18 or c20:
-                ref_to_part = _load_31g_component_lookup()
+                ref_to_part = _load_31g_component_from_db()
                 component_lines = _build_component_action_lines(e18, c20, ref_to_part)
                 if component_lines:
                     action_parts.append(component_lines)
             action_taken_str = "\n".join(action_parts) if action_parts else "N/A"
+            action_taken_str = _replace_dynamic_sn_in_action_text(action_taken_str, sn_31g, sn_33g)
 
-        # 13. Countermeasure – from report_context
-        cm_ctx = ctx.get("countermeasure", {})
-        fa_camh_key_mapping = cm_ctx.get("fa_camh_key_mapping", {})
-        countermeasure_texts = cm_ctx.get("texts", {})
-        db_key = fa_camh_key_mapping.get(camh_fa, camh_fa)
-        countermeasure = countermeasure_texts.get(db_key, "N/A")
+        # 13. Countermeasure – from report_context (DB)
+        if customer_tpl is None:
+            cm_ctx = ctx.get("countermeasure", {})
+            fa_camh_key_mapping = cm_ctx.get("fa_camh_key_mapping") or {
+                "<=2 segment and 89504-0004": "<=2 segment and 89504-0004",
+                "<=2 segment and 89504-0004 to 89504-00085": "<=2 segment and 89504-0004 to 89504-00085",
+                "HCTE Fail": "HCTE Fail",
+                "Old CCD fail": "Old CCD fail",
+                "Line between segment": "Line Between Segment",
+                "Whole segment": "Whole Segment",
+                "White segment": "White segment",
+                "<=2 segment": "<=2 segment",
+                "Whole Segment (5V Cap)": "Whole Segment (5V Cap)",
+            }
+            countermeasure_texts = cm_ctx.get("texts", {})
+            db_key = fa_camh_key_mapping.get(camh_fa, camh_fa)
+            countermeasure = countermeasure_texts.get(db_key, "N/A")
 
         summary_labels = ctx.get("summary_field_labels", [
             "Camera Main Issue", "Camera - Head", "Camera - PCBA", "Scintillator",
@@ -1127,7 +1624,7 @@ def build_failure_form_gui() -> None:
         rows = build_summary_fields(data, body_text)
 
         win = tk.Toplevel(root)
-        win.title("Generated JIRA Report")
+        win.title("Generated JIRA Report (Advanced / DB rules)")
         win.geometry("920x620")
 
         def _copy_report():
@@ -1230,6 +1727,7 @@ def build_failure_form_gui() -> None:
         widget.bind("<Button-5>", _on_mousewheel)
         for child in widget.winfo_children():
             _bind_mousewheel(child)
+
     _bind_mousewheel(form_frame)
 
     root.mainloop()
@@ -1237,3 +1735,4 @@ def build_failure_form_gui() -> None:
 
 if __name__ == "__main__":
     build_failure_form_gui()
+
