@@ -143,7 +143,8 @@ def build_gui():
     review_index = 0
     current_photo = None
     current_plot = None
-    decisions = {}
+    # decisions: image_path -> {"vit": "VIT-1234", "category": "White Segment"}
+    decisions: dict[str, dict[str, str]] = {}
 
     def refresh_category_widgets():
         review_filter_box.config(values=CATEGORIES)
@@ -178,6 +179,9 @@ def build_gui():
         item = review_items[review_index]
         image_path = item["path"]
         result = item["result"]
+        vit_guess = extract_vit_id(os.path.basename(image_path))
+        vit_value = (decisions.get(image_path, {}).get("vit") or vit_guess or "").strip()
+        vit_var.set(vit_value)
 
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         current_photo = to_photo_image(img, 520, 320)
@@ -199,6 +203,7 @@ def build_gui():
 
         info_lines = [
             f"Image: {os.path.basename(image_path)}",
+            f"VIT: {vit_value or '(blank)'}",
         ]
         if "confidence" in result:
             info_lines.append(f"Confidence: {result['confidence']:.2%}")
@@ -228,7 +233,12 @@ def build_gui():
                 messagebox.showinfo("Done", "Batch processing completed. Review results below.")
             decisions.clear()
             for item in all_review_items:
-                decisions[item["path"]] = item["result"]["category"]
+                img_path = item["path"]
+                vit_guess = extract_vit_id(item.get("filename") or os.path.basename(img_path))
+                decisions[img_path] = {
+                    "vit": (vit_guess or "").strip(),
+                    "category": (item.get("result", {}).get("category") or "").strip(),
+                }
             review_filter_var.set(CATEGORIES[0] if CATEGORIES else "")
             apply_review_filter()
         except Exception as exc:
@@ -243,8 +253,8 @@ def build_gui():
         if chosen_category not in CATEGORIES:
             messagebox.showerror("Invalid Input", "Please select a valid category.")
             return
-
-        decisions[item["path"]] = chosen_category
+        vit_value = vit_var.get().strip()
+        decisions[item["path"]] = {"vit": vit_value, "category": chosen_category}
         next_item()
 
     def skip_current():
@@ -280,7 +290,12 @@ def build_gui():
 
         if not decisions:
             for item in all_review_items:
-                decisions[item["path"]] = item["result"]["category"]
+                img_path = item["path"]
+                vit_guess = extract_vit_id(item.get("filename") or os.path.basename(img_path))
+                decisions[img_path] = {
+                    "vit": (vit_guess or "").strip(),
+                    "category": (item.get("result", {}).get("category") or "").strip(),
+                }
 
         if not decisions:
             review_status_var.set("Review complete. No updates to save.")
@@ -295,14 +310,18 @@ def build_gui():
             try:
                 with open(csv_path, "w", newline="") as csv_file:
                     csv_file.write("VIT,filename,category\n")
-                    for image_path, category in decisions.items():
-                        vit_id = extract_vit_id(os.path.basename(image_path))
+                    for image_path, payload in decisions.items():
+                        vit_id = (payload.get("vit") or "").strip()
+                        category = (payload.get("category") or "").strip()
+                        if not vit_id:
+                            vit_id = extract_vit_id(os.path.basename(image_path))
                         csv_file.write(f"{vit_id},{os.path.basename(image_path)},{category}\n")
             except OSError as exc:
                 messagebox.showerror("Error", f"Failed to write CSV: {exc}")
                 return False
 
-            for image_path, category in decisions.items():
+            for image_path, payload in decisions.items():
+                category = (payload.get("category") or "").strip()
                 save_image_to_category(image_path, output_folder, category)
 
             status_msg = f"Review complete. Saved CSV to {csv_path}."
@@ -410,6 +429,7 @@ def build_gui():
     review_side.pack(side="left", fill="both", expand=True, padx=12)
 
     category_var = tk.StringVar(value="Pending")
+    vit_var = tk.StringVar(value="")
     review_filter_var = tk.StringVar(value=CATEGORIES[0] if CATEGORIES else "")
 
     ttk.Label(review_side, text="Review category:").pack(anchor="w")
@@ -422,6 +442,11 @@ def build_gui():
     )
     review_filter_box.pack(anchor="w", pady=(0, 8))
     review_filter_box.bind("<<ComboboxSelected>>", lambda _e: apply_review_filter())
+
+    vit_row = ttk.Frame(review_side)
+    vit_row.pack(anchor="w", pady=(8, 2), fill="x")
+    ttk.Label(vit_row, text="VIT:").pack(side="left")
+    ttk.Entry(vit_row, textvariable=vit_var, width=18).pack(side="left", padx=6)
 
     add_row = ttk.Frame(review_side)
     add_row.pack(anchor="w", pady=(8, 2))
@@ -466,6 +491,9 @@ def build_gui():
     plot_label.pack(fill="x", pady=4)
 
     # --- Tab 2: View Database ---
+    db_data = []  # full list of (vit, filename, category, created_at) from last fetch
+    db_category_filter_var = tk.StringVar(value="All")
+
     ttk.Label(tab_database, text="Review results from MySQL", font=("Helvetica", 12, "bold")).pack(anchor="w")
     db_status_var = tk.StringVar(value="Click Refresh to load data from the database.")
     ttk.Label(tab_database, textvariable=db_status_var).pack(anchor="w", pady=(0, 4))
@@ -473,9 +501,26 @@ def build_gui():
     db_toolbar = ttk.Frame(tab_database)
     db_toolbar.pack(fill="x", pady=(0, 6))
 
-    def refresh_db_view():
+    def get_unique_categories():
+        cats = sorted({row[2] for row in db_data if row[2]})
+        return cats
+
+    def repopulate_db_tree():
+        """Refill tree from db_data using current filter."""
         for item in db_tree.get_children():
             db_tree.delete(item)
+        filter_cat = db_category_filter_var.get()
+        rows = list(db_data)
+        if filter_cat and filter_cat != "All":
+            rows = [r for r in rows if r[2] == filter_cat]
+        for row in rows:
+            vit, filename, category, created_at = row
+            created_str = str(created_at)[:19] if created_at else ""
+            db_tree.insert("", tk.END, values=(vit, filename, category, created_str))
+        db_status_var.set(f"Showing {len(rows)} row(s)." + (f" Filter: {filter_cat}" if filter_cat != "All" else ""))
+
+    def refresh_db_view():
+        nonlocal db_data
         if fetch_review_results is None:
             db_status_var.set("mysql-connector-python not installed; cannot fetch from database.")
             return
@@ -484,13 +529,28 @@ def build_gui():
             db_status_var.set(f"Error: {data}")
             messagebox.showerror("Database Error", str(data))
             return
+        db_data = []
         for row in data:
             vit, filename, category, created_at = row
-            created_str = str(created_at)[:19] if created_at else ""
-            db_tree.insert("", tk.END, values=(vit, filename, category, created_str))
-        db_status_var.set(f"Loaded {len(data)} row(s) from MySQL.")
+            db_data.append((vit, filename, category, created_at))
+        # Update filter dropdown with categories present in data
+        choices = ["All"] + get_unique_categories()
+        db_category_filter_combo["values"] = choices
+        db_category_filter_var.set("All")
+        repopulate_db_tree()
+        db_status_var.set(f"Loaded {len(db_data)} row(s) from MySQL.")
 
     ttk.Button(db_toolbar, text="Refresh", command=refresh_db_view).pack(side="left")
+    ttk.Label(db_toolbar, text="  Category:").pack(side="left", padx=(12, 2))
+    db_category_filter_combo = ttk.Combobox(
+        db_toolbar,
+        textvariable=db_category_filter_var,
+        values=["All"],
+        state="readonly",
+        width=18,
+    )
+    db_category_filter_combo.pack(side="left")
+    db_category_filter_combo.bind("<<ComboboxSelected>>", lambda _e: repopulate_db_tree())
 
     db_container = ttk.Frame(tab_database)
     db_container.pack(fill="both", expand=True)

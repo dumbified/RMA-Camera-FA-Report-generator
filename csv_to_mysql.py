@@ -12,8 +12,8 @@ from pathlib import Path
 MYSQL_HOST = "localhost"
 MYSQL_PORT = 3306
 MYSQL_USER = "root"
-MYSQL_PASSWORD = ""
-MYSQL_DATABASE = "upload_csv"
+MYSQL_PASSWORD = "admin123"
+MYSQL_DATABASE = "fa_report"
 MYSQL_TABLE = "review_results"
 
 
@@ -101,9 +101,48 @@ def upload_csv_to_mysql(csv_path, table_name=None, if_exists="append"):
             f"INSERT INTO `{table}` (vit, filename, category) VALUES (%s, %s, %s) "
             f"ON DUPLICATE KEY UPDATE category = VALUES(category)"
         )
+
+        # Optional: also backfill rma_cam with Main Issue fields for CAMH segmentation
+        # Only writes when Main Issue, Main Issue Category 1, and Main Issue Category 2 are all blank.
+        try:
+            import mysql.connector  # type: ignore[import]
+        except ImportError:
+            mysql = None  # type: ignore[assignment]
+        else:
+            mysql = mysql.connector  # type: ignore[assignment]
+
+        update_sql = None
+        if mysql is not None:
+            update_sql = """
+                UPDATE `rma_cam`
+                SET
+                    `Main Issue` = %s,
+                    `Main Issue Category 1` = %s,
+                    `Main Issue Category 2` = %s
+                WHERE VIT = %s
+                  AND (`Main Issue` IS NULL OR `Main Issue` = '')
+                  AND (`Main Issue Category 1` IS NULL OR `Main Issue Category 1` = '')
+                  AND (`Main Issue Category 2` IS NULL OR `Main Issue Category 2` = '')
+            """
+
         for row in rows:
             if len(row) >= 3:
-                cursor.execute(insert_sql, (row[0].strip(), row[1].strip(), row[2].strip()))
+                vit = row[0].strip()
+                filename = row[1].strip()
+                category = row[2].strip()
+                cursor.execute(insert_sql, (vit, filename, category))
+
+                # Backfill rma_cam only when connector is available and update_sql prepared
+                if update_sql is not None and vit and category:
+                    try:
+                        cursor.execute(
+                            update_sql,
+                            ("CAMH", "CCD Segment Die", category, vit),
+                        )
+                    except Exception:
+                        # Silently ignore if rma_cam or columns do not exist;
+                        # review_results upload should still succeed.
+                        pass
 
         conn.commit()
         count = len([r for r in rows if len(r) >= 3])

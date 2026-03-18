@@ -2,7 +2,8 @@ import csv
 import json
 import os
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, filedialog
+from functools import lru_cache
 
 from db_config_fa import get_fa_mysql_config
 
@@ -32,6 +33,7 @@ def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> ttk.C
     return cb
 
 
+@lru_cache(maxsize=None)
 def _load_31g_component_from_db() -> dict[str, tuple[str, str, str]]:
     """
     Load 3.1G component lookup from MySQL (Component, partID, Description).
@@ -382,6 +384,114 @@ def _infer_camera_model_from_db(vit_id: str) -> str | None:
     return None
 
 
+def _fetch_main_issue_fields_for_vit(vit_id: str) -> tuple[str, str, str] | None:
+    """
+    Fetch (Main Issue, Main Issue Category 1, Main Issue Category 2) for VIT from rma_cam.
+    Returns tuple of strings, or None if not found.
+    """
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    main_issue_cols = ["`Main Issue`", "MAIN_ISSUE", "main_issue"]
+    cat1_cols = ["`Main Issue Category 1`", "MAIN_ISSUE_CATEGORY_1", "main_issue_category_1"]
+    cat2_cols = ["`Main Issue Category 2`", "MAIN_ISSUE_CATEGORY_2", "main_issue_category_2"]
+
+    row = None
+    try:
+        cursor = conn.cursor()
+        for mi in main_issue_cols:
+            for c1 in cat1_cols:
+                for c2 in cat2_cols:
+                    try:
+                        cursor.execute(
+                            f"SELECT {mi}, {c1}, {c2} FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                            (vit_id,),
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            break
+                    except mysql.connector.Error:
+                        continue
+                if row:
+                    break
+            if row:
+                break
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    mi = (row[0] or "").strip()
+    c1 = (row[1] or "").strip()
+    c2 = (row[2] or "").strip()
+    return (mi, c1, c2)
+
+
+def _map_main_issue_to_camh_screening(main_issue: str, cat1: str, cat2: str) -> str:
+    """
+    Map DB main-issue fields into CAMH Screening dropdown value.
+
+    Rules:
+      - If Main Issue is CAMH and Category 1 is CCD Segment Die -> use Category 2 mapped to CAMH values.
+      - If they are NPF -> "Perfect"
+      - If blank -> placeholder (currently empty string)
+    """
+    mi = (main_issue or "").strip().lower()
+    c1n = (cat1 or "").strip().lower()
+    c2n = (cat2 or "").strip()
+
+    if not mi and not c1n and not c2n:
+        return ""  # placeholder for now
+
+    if mi == "npf" or c1n == "npf" or (cat2 or "").strip().lower() == "npf":
+        return "Perfect"
+
+    if mi == "camh" and c1n == "ccd segment die":
+        v = (cat2 or "").strip().lower()
+        # map common variants to the existing CAMH dropdown values
+        mapping = {
+            "white segment": "White Segment",
+            "white": "White Segment",
+            "whole segment": "Whole Segment",
+            "whole": "Whole Segment",
+            "line between segment": "Line Between Segment",
+            "line between": "Line Between Segment",
+            "line": "Line Between Segment",
+            "<=2 segment": "<= 2 segment",
+            "<= 2 segment": "<= 2 segment",
+            "die segment": "Multiple Segment Die",
+            "multiple segment die": "Multiple Segment Die",
+            "multiple": "Multiple Segment Die",
+        }
+        for key, out in mapping.items():
+            if v == key or key in v:
+                return out
+        return c2n  # last resort: put raw value (may not match dropdown; user can correct)
+
+    return ""  # placeholder for other combinations for now
+
+
+@lru_cache(maxsize=None)
 def _load_camh_base_sn_from_db() -> dict[str, str]:
     """Load camera_group -> base_sn from fa_camh_base_sn. Fallback to defaults if table missing."""
     try:
@@ -441,6 +551,7 @@ def _replace_dynamic_sn_in_action_text(text: str, sn_31g: str, sn_33g: str) -> s
     return text.replace("89504-0008", sn_31g).replace("89504-0010", sn_33g)
 
 
+@lru_cache(maxsize=None)
 def _load_report_context_from_db() -> dict | None:
     """Load report_context from MySQL. Returns the context dict or None."""
     try:
@@ -480,6 +591,7 @@ def _load_report_context_from_db() -> dict | None:
     return data
 
 
+@lru_cache(maxsize=None)
 def _load_customer_request_templates_from_db() -> dict | None:
     """Load customer request templates from MySQL. Returns dict of template_key -> template_data or None."""
     try:
@@ -532,6 +644,7 @@ def _textbox(parent, label: str, height: int, row: int, col: int = 0) -> tk.Text
     return w
 
 
+@lru_cache(maxsize=None)
 def _load_report_rules_from_db():
     """
     Load FA report rules from MySQL and return the same structure as report_rules.json:
@@ -626,13 +739,80 @@ def _load_report_rules_from_db():
 def build_failure_form_gui() -> None:
     root = tk.Tk()
     root.title("Camera Failure Analysis Form (Advanced / DB rules)")
-    root.geometry("900x820")
+    root.geometry("1150x820")
 
-    main = ttk.Frame(root, padding=12)
-    main.pack(fill="both", expand=True)
+    main_paned = ttk.PanedWindow(root, orient="horizontal")
+    main_paned.pack(fill="both", expand=True, padx=12, pady=12)
 
-    canvas = tk.Canvas(main, highlightthickness=0)
-    scrollbar = ttk.Scrollbar(main, orient="vertical", command=canvas.yview)
+    # --- Left Panel: Batch Queue ---
+    left_panel = ttk.Frame(main_paned, width=220)
+    main_paned.add(left_panel, weight=0)
+
+    ttk.Label(left_panel, text="Batch Queue", font=("", 10, "bold")).pack(anchor="w", pady=(0, 4))
+    ttk.Label(left_panel, text="Paste VIT IDs (one per line):").pack(anchor="w")
+    batch_input_text = tk.Text(left_panel, height=8, width=25)
+    batch_input_text.pack(fill="x", pady=4)
+
+    batch_vits = []
+    batch_states = {}
+    current_batch_idx = -1
+
+    def add_to_queue():
+        text = batch_input_text.get("1.0", tk.END).strip()
+        if not text:
+            return
+        raw_vits = [v.strip() for v in text.split("\n") if v.strip()]
+        for raw_v in raw_vits:
+            v_upper = raw_v.upper()
+            if v_upper.isdigit():
+                v = f"VIT-{v_upper}"
+            elif v_upper.startswith("VIT") and not v_upper.startswith("VIT-"):
+                v = f"VIT-{v_upper[3:]}"
+            elif v_upper.startswith("VIT-"):
+                v = f"VIT-{v_upper[4:]}"
+            else:
+                v = raw_v
+                
+            if v not in batch_vits:
+                batch_vits.append(v)
+                batch_listbox.insert(tk.END, v)
+        batch_input_text.delete("1.0", tk.END)
+
+    def remove_from_queue():
+        nonlocal current_batch_idx
+        selection = batch_listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        vit_to_remove = batch_vits[idx]
+        
+        batch_listbox.delete(idx)
+        batch_vits.pop(idx)
+        
+        if vit_to_remove in batch_states:
+            del batch_states[vit_to_remove]
+            
+        if idx == current_batch_idx:
+            current_batch_idx = -1
+            clear_form()
+        elif idx < current_batch_idx:
+            current_batch_idx -= 1
+
+    ttk.Button(left_panel, text="Add to Queue", command=add_to_queue).pack(fill="x", pady=(4, 2))
+    ttk.Button(left_panel, text="Remove Selected", command=remove_from_queue).pack(fill="x", pady=(0, 4))
+
+    batch_listbox = tk.Listbox(left_panel, height=15)
+    batch_listbox.pack(fill="both", expand=True, pady=4)
+
+    # We will define on_listbox_select and batch_export later in the function
+    # after all variables are defined.
+
+    # --- Right Panel: Form ---
+    right_panel = ttk.Frame(main_paned)
+    main_paned.add(right_panel, weight=1)
+
+    canvas = tk.Canvas(right_panel, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(right_panel, orient="vertical", command=canvas.yview)
     form_frame = ttk.Frame(canvas)
 
     form_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -697,15 +877,50 @@ def build_failure_form_gui() -> None:
     ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
     vit_id_entry = ttk.Entry(form_frame, textvariable=vit_id_var, width=20)
     vit_id_entry.grid(row=row, column=1, sticky="ew", pady=2)
+    last_missing_main_issue_prompt_vit: str | None = None
 
-    def _on_vit_confirm(_e=None) -> None:
+    def _on_vit_confirm(_e=None, silent=False) -> None:
+        nonlocal last_missing_main_issue_prompt_vit
         vit = (vit_id_var.get() or "").strip()
         if not vit:
             return
+            
+        # Auto-format VIT ID if user only typed numbers
+        v_upper = vit.upper()
+        if v_upper.isdigit():
+            vit = f"VIT-{v_upper}"
+        elif v_upper.startswith("VIT") and not v_upper.startswith("VIT-"):
+            vit = f"VIT-{v_upper[3:]}"
+        elif v_upper.startswith("VIT-"):
+            vit = f"VIT-{v_upper[4:]}"
+        vit_id_var.set(vit)
+            
+        main_issue_missing = False
+        # Main Issue (from DB) -> CAMH screening (if applicable)
+        mi_row = _fetch_main_issue_fields_for_vit(vit)
+        if mi_row:
+            mi, c1, c2 = mi_row
+            # If the row exists but the main-issue fields are all blank, prompt the user once per VIT.
+            if not (mi or c1 or c2):
+                main_issue_missing = True
+                # Keep CAMH screening blank when Main Issue is missing.
+                camh_var.set("")
+                if not silent and last_missing_main_issue_prompt_vit != vit:
+                    last_missing_main_issue_prompt_vit = vit
+                    messagebox.showinfo(
+                        "Main Issue missing",
+                        "CAMH Screening value is missing, please proceed to the classification system or manual identify the defect type.",
+                    )
+            mapped_camh = _map_main_issue_to_camh_screening(mi, c1, c2)
+            if mapped_camh:
+                camh_var.set(mapped_camh)
+
         screening = _fetch_screening_for_vit(vit)
         if screening:
             pcba_var.set(screening[0])
-            camh_var.set(screening[1])
+            # If Main Issue is missing, do NOT auto-fill CAMH (keep blank).
+            if (not main_issue_missing) and (not (camh_var.get() or "").strip()):
+                camh_var.set(screening[1])
             scintillator_var.set(screening[2])
         ft_result = _fetch_ft_result_for_vit(vit)
         if ft_result:
@@ -1216,6 +1431,165 @@ def build_failure_form_gui() -> None:
         scrap_why_var.set("")
         bad_camh_assemble_bubble_var.set(False)
 
+    def get_form_state() -> dict:
+        return {
+            "vit_id_var": vit_id_var.get(),
+            "npf_all_reworked_var": npf_all_reworked_var.get(),
+            "customer_request_var": customer_request_var.get(),
+            "customer_request_type_var": customer_request_type_var.get(),
+            "camera_model_var": camera_model_var.get(),
+            "burnt_var": burnt_var.get(),
+            "power_on_unit_var": power_on_unit_var.get(),
+            "remark_missing_burnt_text": get_text(remark_missing_burnt_text),
+            "pcba_var": pcba_var.get(),
+            "camh_var": camh_var.get(),
+            "scintillator_var": scintillator_var.get(),
+            "ecc_rework_var": ecc_rework_var.get(),
+            "good_camh_var": good_camh_var.get(),
+            "bad_camh_var": bad_camh_var.get(),
+            "which_dvm_fail_text": get_text(which_dvm_fail_text),
+            "can_repair_bad_camh_var": can_repair_bad_camh_var.get(),
+            "component_cause_text": get_text(component_cause_text),
+            "pcba_ats_result_var": pcba_ats_result_var.get(),
+            "ats_result_if_failed_text": get_text(ats_result_if_failed_text),
+            "can_repair_ats_var": can_repair_ats_var.get(),
+            "component_cause_ats_text": get_text(component_cause_ats_text),
+            "component_category_var": component_category_var.get(),
+            "ft_result_var": ft_result_var.get(),
+            "ft_fail_component_change_text": get_text(ft_fail_component_change_text),
+            "can_repair_ft_var": can_repair_ft_var.get(),
+            "ft_pass_which_camh_var": ft_pass_which_camh_var.get(),
+            "npf_final_var": npf_final_var.get(),
+            "camh_final_var": camh_final_var.get(),
+            "pcba_final_var": pcba_final_var.get(),
+            "scrap_why_var": scrap_why_var.get(),
+            "bad_camh_assemble_bubble_var": bad_camh_assemble_bubble_var.get(),
+        }
+
+    def set_form_state(state: dict) -> None:
+        vit_id_var.set(state.get("vit_id_var", ""))
+        npf_all_reworked_var.set(state.get("npf_all_reworked_var", False))
+        customer_request_var.set(state.get("customer_request_var", False))
+        customer_request_type_var.set(state.get("customer_request_type_var", ""))
+        camera_model_var.set(state.get("camera_model_var", "3.3G"))
+        burnt_var.set(state.get("burnt_var", False))
+        power_on_unit_var.set(state.get("power_on_unit_var", ""))
+        set_text(remark_missing_burnt_text, state.get("remark_missing_burnt_text", ""))
+        pcba_var.set(state.get("pcba_var", ""))
+        camh_var.set(state.get("camh_var", ""))
+        scintillator_var.set(state.get("scintillator_var", ""))
+        ecc_rework_var.set(state.get("ecc_rework_var", ""))
+        good_camh_var.set(state.get("good_camh_var", ""))
+        bad_camh_var.set(state.get("bad_camh_var", ""))
+        set_text(which_dvm_fail_text, state.get("which_dvm_fail_text", ""))
+        can_repair_bad_camh_var.set(state.get("can_repair_bad_camh_var", ""))
+        set_text(component_cause_text, state.get("component_cause_text", ""))
+        pcba_ats_result_var.set(state.get("pcba_ats_result_var", ""))
+        set_text(ats_result_if_failed_text, state.get("ats_result_if_failed_text", ""))
+        can_repair_ats_var.set(state.get("can_repair_ats_var", ""))
+        set_text(component_cause_ats_text, state.get("component_cause_ats_text", ""))
+        component_category_var.set(state.get("component_category_var", ""))
+        ft_result_var.set(state.get("ft_result_var", ""))
+        set_text(ft_fail_component_change_text, state.get("ft_fail_component_change_text", ""))
+        can_repair_ft_var.set(state.get("can_repair_ft_var", ""))
+        ft_pass_which_camh_var.set(state.get("ft_pass_which_camh_var", ""))
+        npf_final_var.set(state.get("npf_final_var", False))
+        camh_final_var.set(state.get("camh_final_var", ""))
+        pcba_final_var.set(state.get("pcba_final_var", ""))
+        scrap_why_var.set(state.get("scrap_why_var", ""))
+        bad_camh_assemble_bubble_var.set(state.get("bad_camh_assemble_bubble_var", False))
+        refresh_interaction_states()
+
+    def on_listbox_select(event):
+        nonlocal current_batch_idx
+        selection = batch_listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        if idx == current_batch_idx:
+            return
+            
+        # Save current state
+        if current_batch_idx >= 0 and current_batch_idx < len(batch_vits):
+            old_vit = batch_vits[current_batch_idx]
+            batch_states[old_vit] = get_form_state()
+            
+        current_batch_idx = idx
+        new_vit = batch_vits[current_batch_idx]
+        
+        # Load new state or fetch from DB
+        if new_vit in batch_states:
+            set_form_state(batch_states[new_vit])
+        else:
+            clear_form()
+            vit_id_var.set(new_vit)
+            _on_vit_confirm() # This triggers the DB fetch
+            
+    batch_listbox.bind("<<ListboxSelect>>", on_listbox_select)
+    
+    def batch_export():
+        # Save current state
+        if current_batch_idx >= 0 and current_batch_idx < len(batch_vits):
+            old_vit = batch_vits[current_batch_idx]
+            batch_states[old_vit] = get_form_state()
+
+        if not batch_vits:
+            messagebox.showinfo("Batch Export", "Queue is empty.")
+            return
+
+        success_count = 0
+        all_rows_for_clipboard = []
+        header_names = None
+
+        try:
+            for vit in batch_vits:
+                # If user never clicked it, fetch it now
+                if vit not in batch_states:
+                    clear_form()
+                    vit_id_var.set(vit)
+                    _on_vit_confirm(silent=True)
+                    batch_states[vit] = get_form_state()
+
+                # Temporarily load the state to collect data properly
+                set_form_state(batch_states[vit])
+                data = collect_data()
+
+                # Build report
+                body_text = build_report_text(data)
+                rows = build_summary_fields(data, body_text)
+                
+                # Insert VIT ID as the first column
+                rows.insert(0, ("VIT ID", vit))
+
+                if header_names is None:
+                    header_names = [r[0] for r in rows]
+
+                row_values = [r[1] for r in rows]
+
+                # Prepare for clipboard
+                values_for_clipboard = [(val or "").strip().replace("\n", " ") for val in row_values]
+                all_rows_for_clipboard.append("\t".join(values_for_clipboard))
+
+                success_count += 1
+
+            # Restore the currently selected form state
+            if current_batch_idx >= 0 and current_batch_idx < len(batch_vits):
+                set_form_state(batch_states[batch_vits[current_batch_idx]])
+            else:
+                clear_form()
+
+            # Copy to clipboard
+            if header_names and all_rows_for_clipboard:
+                tsv = "\t".join(header_names) + "\n" + "\n".join(all_rows_for_clipboard)
+                root.clipboard_clear()
+                root.clipboard_append(tsv)
+
+            messagebox.showinfo("Batch Export", f"Successfully generated {success_count} reports.\n\nThe combined report data has been copied to your clipboard.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export: {e}")
+
+    ttk.Button(left_panel, text="Batch Export (Copy to Clipboard)", command=batch_export).pack(fill="x", pady=4)
+
     def _match_conditions(form: dict, conditions: dict) -> bool:
         """Return True if form data satisfies all key/value pairs in conditions."""
         for key, expected in conditions.items():
@@ -1303,7 +1677,7 @@ def build_failure_form_gui() -> None:
                 step += 1
         return "\n".join(numbered_lines)
 
-    def build_summary_fields(form: dict, failure_body: str) -> str:
+    def build_summary_fields(form: dict, failure_body: str) -> list[tuple[str, str]]:
         """Build key/value summary block similar to Sheet20 header."""
         # Helper flags
         npf_final = bool(form.get("npf_final"))
