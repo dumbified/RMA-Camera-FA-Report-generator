@@ -21,10 +21,9 @@ from db_config_fa import get_fa_mysql_config
 
 
 def _load_json_rules() -> Dict[str, Any]:
-    """Load the existing report_rules.json from the original FA report folder."""
+    """Load report_rules.json from the advanced FA report folder."""
     here = os.path.dirname(__file__)
-    json_path = os.path.join(here, "..", "FA report", "report_rules.json")
-    json_path = os.path.abspath(json_path)
+    json_path = os.path.abspath(os.path.join(here, "report_rules.json"))
     with open(json_path, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
