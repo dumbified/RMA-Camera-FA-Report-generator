@@ -6,6 +6,11 @@ from tkinter import messagebox, ttk, filedialog
 from functools import lru_cache
 
 from db_config_fa import get_fa_mysql_config
+from camh_classification_fallback import (
+    classify_camh_from_vit,
+    get_image_dir_from_config,
+    set_image_dir_in_config,
+)
 
 
 def _bool_to_str(value: bool) -> str:
@@ -257,6 +262,61 @@ def _fetch_ft_result_for_vit(vit_id: str) -> str | None:
     if raw.startswith("repaired"):
         return "Pass with repaired camh"
 
+    return None
+
+
+def _fetch_reworked_flag_for_vit(vit_id: str) -> str | None:
+    """
+    Fetch 'Reworked' column from rma_cam for a VIT.
+    Returns normalized value: 'yes', 'no', or None if not found/unknown.
+    """
+    vit_id = (vit_id or "").strip()
+    if not vit_id:
+        return None
+    try:
+        import mysql.connector  # type: ignore[import]
+    except ImportError:
+        return None
+
+    cfg = get_fa_mysql_config()
+    try:
+        conn = mysql.connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            user=cfg.user,
+            password=cfg.password,
+            database=cfg.database,
+        )
+    except mysql.connector.Error:
+        return None
+
+    col_candidates = ["`Reworked`", "REWORKED", "reworked"]
+    row = None
+    try:
+        cursor = conn.cursor()
+        for col in col_candidates:
+            try:
+                cursor.execute(
+                    f"SELECT {col} FROM `{cfg.rma_cam_table}` WHERE VIT = %s LIMIT 1",
+                    (vit_id,),
+                )
+                row = cursor.fetchone()
+                break
+            except mysql.connector.Error:
+                continue
+    except mysql.connector.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row or row[0] is None:
+        return None
+
+    raw = str(row[0]).strip().lower()
+    if raw in ("yes", "y", "1", "true"):
+        return "yes"
+    if raw in ("no", "n", "0", "false"):
+        return "no"
     return None
 
 
@@ -838,7 +898,9 @@ def build_failure_form_gui() -> None:
         form_frame.columnconfigure(i, weight=1)
 
     # --- Variables ---
+    image_dir_default = get_image_dir_from_config()
     vit_id_var = tk.StringVar(value="")
+    classification_image_dir_var = tk.StringVar(value=image_dir_default)
     npf_all_reworked_var = tk.BooleanVar(value=False)
     customer_request_var = tk.BooleanVar(value=False)
     customer_request_type_var = tk.StringVar(value="")
@@ -857,7 +919,7 @@ def build_failure_form_gui() -> None:
     # "able" / "unable" (and "Scrap" for PCBA/FT).
     can_repair_bad_camh_var = tk.StringVar(value="")
     component_cause_var = tk.StringVar(value="")  # from textbox
-    pcba_ats_result_var = tk.StringVar(value="")
+    pcba_ats_result_var = tk.StringVar(value="Pass")
     ats_result_if_failed_var = tk.StringVar(value="")  # from textbox
     can_repair_ats_var = tk.StringVar(value="")
     component_cause_ats_var = tk.StringVar(value="")  # from textbox
@@ -872,18 +934,58 @@ def build_failure_form_gui() -> None:
     bad_camh_assemble_bubble_var = tk.BooleanVar(value=False)
 
     row = 0
+    skipped_vits: set[str] = set()
+
+    def _persist_image_dir() -> None:
+        set_image_dir_in_config(classification_image_dir_var.get().strip())
+
+    def _browse_image_dir() -> None:
+        chosen = filedialog.askdirectory(title="Select Classification Image Folder")
+        if not chosen:
+            return
+        classification_image_dir_var.set(chosen)
+        _persist_image_dir()
+
+    def _open_settings_window() -> None:
+        win = tk.Toplevel(root)
+        win.title("Settings")
+        win.geometry("520x130")
+        win.transient(root)
+
+        main = ttk.Frame(win, padding=10)
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=1)
+
+        ttk.Label(main, text="Classifier Image Dir").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+
+        entry_row = ttk.Frame(main)
+        entry_row.grid(row=1, column=0, sticky="ew", pady=4)
+        entry_row.columnconfigure(0, weight=1)
+        entry = ttk.Entry(entry_row, textvariable=classification_image_dir_var)
+        entry.grid(row=0, column=0, sticky="ew")
+        entry.bind("<FocusOut>", lambda _e: _persist_image_dir())
+
+        ttk.Button(entry_row, text="Browse", command=_browse_image_dir).grid(row=0, column=1, padx=(6, 0))
+
+        btn_row = ttk.Frame(main)
+        btn_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        btn_row.columnconfigure(0, weight=1)
+        btn_row.columnconfigure(1, weight=1)
+        ttk.Button(btn_row, text="Save", command=lambda: (_persist_image_dir(), win.destroy())).grid(row=0, column=0, padx=(0, 4), sticky="ew")
+        ttk.Button(btn_row, text="Cancel", command=win.destroy).grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
     # --- VIT ID [user types; Enter or FocusOut fetches screening from rma_cam] ---
     ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
     vit_id_entry = ttk.Entry(form_frame, textvariable=vit_id_var, width=20)
     vit_id_entry.grid(row=row, column=1, sticky="ew", pady=2)
     last_missing_main_issue_prompt_vit: str | None = None
+    row += 1
 
-    def _on_vit_confirm(_e=None, silent=False) -> None:
+    def _on_vit_confirm(_e=None, silent=False) -> bool:
         nonlocal last_missing_main_issue_prompt_vit
         vit = (vit_id_var.get() or "").strip()
         if not vit:
-            return
+            return False
             
         # Auto-format VIT ID if user only typed numbers
         v_upper = vit.upper()
@@ -894,12 +996,29 @@ def build_failure_form_gui() -> None:
         elif v_upper.startswith("VIT-"):
             vit = f"VIT-{v_upper[4:]}"
         vit_id_var.set(vit)
+
+        # Reset skip marker for this VIT (might have been skipped earlier).
+        skipped_vits.discard(vit)
             
         main_issue_missing = False
         # Main Issue (from DB) -> CAMH screening (if applicable)
         mi_row = _fetch_main_issue_fields_for_vit(vit)
         if mi_row:
             mi, c1, c2 = mi_row
+            mi_norm = (mi or "").strip().lower()
+            # Guardrail: this form is CAMH-focused. If Main Issue is something else
+            # (e.g., PCBA) we warn and skip auto-filling for this VIT.
+            if mi_norm and mi_norm != "camh":
+                if not silent:
+                    messagebox.showinfo(
+                        "CAMH required",
+                        "This VIT ID is not CAMH, please check the ID again",
+                    )
+                skipped_vits.add(vit)
+                clear_form()
+                vit_id_var.set(vit)
+                refresh_interaction_states()
+                return False
             # If the row exists but the main-issue fields are all blank, prompt the user once per VIT.
             if not (mi or c1 or c2):
                 main_issue_missing = True
@@ -909,11 +1028,36 @@ def build_failure_form_gui() -> None:
                     last_missing_main_issue_prompt_vit = vit
                     messagebox.showinfo(
                         "Main Issue missing",
-                        "CAMH Screening value is missing, please proceed to the classification system or manual identify the defect type.",
+                        "Classification is running to infer CAMH from the image folder. Please wait...",
                     )
             mapped_camh = _map_main_issue_to_camh_screening(mi, c1, c2)
             if mapped_camh:
                 camh_var.set(mapped_camh)
+
+        # Fallback classification path:
+        # only when main issue fields are missing and CAMH is still blank.
+        if main_issue_missing and not (camh_var.get() or "").strip():
+            fallback = classify_camh_from_vit(vit, classification_image_dir_var.get())
+            if fallback.camh_value:
+                camh_var.set(fallback.camh_value)
+            else:
+                # No usable classification output.
+                # If no images matched this VIT ID, warn the user and skip this VIT.
+                if (not silent) and fallback.matched_images == 0:
+                    messagebox.showwarning(
+                        "Image missing",
+                        f"image for VIT ID {vit} does not exist. Please check again",
+                    )
+                    skipped_vits.add(vit)
+                    clear_form()
+                    vit_id_var.set(vit)
+                    refresh_interaction_states()
+                    return False
+                if (not silent) and fallback.matched_images > 0 and fallback.pending_votes > 0:
+                    messagebox.showwarning(
+                        "Low confidence",
+                        "Low confidence on classifying this image, please manual check the image",
+                    )
 
         screening = _fetch_screening_for_vit(vit)
         if screening:
@@ -928,7 +1072,24 @@ def build_failure_form_gui() -> None:
         inferred_model = _infer_camera_model_from_db(vit)
         if inferred_model:
             camera_model_var.set(inferred_model)
+
+        # ECC Rework from Reworked flag + Camera Model
+        reworked_flag = _fetch_reworked_flag_for_vit(vit)
+        ecc_value = "NA"
+        if reworked_flag == "yes":
+            model = (camera_model_var.get() or "").strip()
+            if model == "3.1G Old":
+                ecc_value = "3.1G old Rework"
+            elif model == "3.1G New":
+                ecc_value = "3.1G new Rework"
+            elif model == "3G":
+                ecc_value = "3G rework"
+        elif reworked_flag == "no":
+            ecc_value = "NA"
+        ecc_rework_var.set(ecc_value)
+
         refresh_interaction_states()
+        return True
 
     vit_id_entry.bind("<Return>", _on_vit_confirm)
     vit_id_entry.bind("<FocusOut>", _on_vit_confirm)
@@ -1416,7 +1577,7 @@ def build_failure_form_gui() -> None:
         set_text(which_dvm_fail_text, "")
         can_repair_bad_camh_var.set("")
         set_text(component_cause_text, "")
-        pcba_ats_result_var.set("")
+        pcba_ats_result_var.set("Pass")
         set_text(ats_result_if_failed_text, "")
         can_repair_ats_var.set("")
         set_text(component_cause_ats_text, "")
@@ -1538,21 +1699,46 @@ def build_failure_form_gui() -> None:
             return
 
         success_count = 0
+        skipped_count = 0
         all_rows_for_clipboard = []
         header_names = None
+        csv_path = os.path.join(os.getcwd(), "failure_form_entries.csv")
+        csv_exists = os.path.isfile(csv_path)
+        csv_fieldnames: list[str] | None = None
 
         try:
             for vit in batch_vits:
+                if vit in skipped_vits:
+                    skipped_count += 1
+                    continue
                 # If user never clicked it, fetch it now
                 if vit not in batch_states:
                     clear_form()
                     vit_id_var.set(vit)
-                    _on_vit_confirm(silent=True)
+                    ok = _on_vit_confirm(silent=True)
+                    if not ok:
+                        skipped_count += 1
+                        skipped_vits.add(vit)
+                        continue
                     batch_states[vit] = get_form_state()
 
                 # Temporarily load the state to collect data properly
                 set_form_state(batch_states[vit])
                 data = collect_data()
+
+                if csv_fieldnames is None:
+                    csv_fieldnames = list(data.keys())
+                _ensure_directory(csv_path)
+                try:
+                    with open(csv_path, "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=csv_fieldnames)
+                        if not csv_exists:
+                            writer.writeheader()
+                            csv_exists = True
+                        writer.writerow(data)
+                except OSError:
+                    # Keep batch export running; reporting/clipboard is still useful.
+                    pass
 
                 # Build report
                 body_text = build_report_text(data)
@@ -2088,7 +2274,7 @@ def build_failure_form_gui() -> None:
     ttk.Button(btn_frame, text="Save", command=save_to_csv).grid(row=0, column=0, padx=4)
     ttk.Button(btn_frame, text="Generate Report", command=show_report_window).grid(row=0, column=1, padx=4)
     ttk.Button(btn_frame, text="Clear", command=clear_form).grid(row=0, column=2, padx=4)
-    ttk.Button(btn_frame, text="Close", command=root.destroy).grid(row=0, column=3, padx=4)
+    ttk.Button(btn_frame, text="Settings", command=_open_settings_window).grid(row=0, column=3, padx=4)
 
     for w in (root, canvas, form_frame):
         w.bind("<MouseWheel>", _on_mousewheel)
