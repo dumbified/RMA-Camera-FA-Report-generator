@@ -98,6 +98,8 @@ def _create_tables(cursor) -> None:
             CONSTRAINT fk_{data_tbl}_section
                 FOREIGN KEY (section_id) REFERENCES `{sections}` (id)
                 ON DELETE CASCADE
+            ,
+            UNIQUE KEY uniq_item_context (item_type, context_key)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
@@ -170,16 +172,19 @@ def migrate() -> None:
                 )
 
         # Insert report_context into fa_report_data (item_type='context')
+        # Split into smaller rows for DB cleanliness:
+        #   report_context.<top_level_key> -> each top-level key's JSON value
         report_ctx = rules_json.get("report_context", {})
         if report_ctx:
-            cursor.execute(
-                f"""
-                INSERT INTO `{data_table}`
-                    (item_type, context_key, context_data)
-                VALUES ('context', %s, %s)
-                """,
-                ("report_context", json.dumps(report_ctx)),
-            )
+            for top_key, top_value in report_ctx.items():
+                cursor.execute(
+                    f"""
+                    INSERT INTO `{data_table}`
+                        (item_type, context_key, context_data)
+                    VALUES ('context', %s, %s)
+                    """,
+                    (f"report_context.{top_key}", json.dumps(top_value)),
+                )
 
         # Migrate customer_request_templates
         try:

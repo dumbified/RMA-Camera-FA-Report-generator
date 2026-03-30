@@ -64,7 +64,7 @@
           "camh": "*",
           "scintillator": "*"
         },
-        "text": "Screening PCBA and camera head --> \\n     PCBA ----> {pcba}, \\n     Camera head ----> {camh}, \\n     Scintillator ----> {scintillator}"
+        "text": "Screening PCBA and camera head -->\\nPCBA ----> {pcba}\\nCamera head ----> {camh}\\nScintillator ----> {scintillator}"
       }
     ],
     "pcba_programming": [

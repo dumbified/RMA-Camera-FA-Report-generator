@@ -28,6 +28,21 @@ def _normalize_newlines(s: str) -> str:
     return (s or "").replace("\\n", "\n")
 
 
+def _clipboard_tsv_field(s: str | None) -> str:
+    """
+    Format one field for tab-separated clipboard paste (e.g. Excel / Sheets).
+
+    Preserves real line breaks inside a single TSV cell by quoting the field
+    when it contains newline/tab/double-quote (Excel-style: "" for escaped quotes).
+    """
+    text = "" if s is None else str(s)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.strip()
+    if "\n" in text or "\t" in text or '"' in text:
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
 def _checkbox_row(parent, text: str, variable: tk.BooleanVar, row: int) -> ttk.Checkbutton:
     """Label on left, checkbox (small box) on right. Returns the Checkbutton for state control."""
     f = ttk.Frame(parent)
@@ -634,21 +649,50 @@ def _load_report_context_from_db() -> dict | None:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            f"SELECT context_data FROM `{cfg.report_data_table}` "
-            f"WHERE item_type = 'context' AND context_key = 'report_context'"
+            f"""
+            SELECT context_key, context_data
+            FROM `{cfg.report_data_table}`
+            WHERE item_type = 'context'
+              AND (
+                context_key = 'report_context'
+                OR context_key LIKE 'report_context.%'
+              )
+            """
         )
-        row = cursor.fetchone()
+        rows = cursor.fetchall()
     except mysql.connector.Error:
         return None
     finally:
         conn.close()
 
-    if not row:
+    if not rows:
         return None
-    data = row[0]
-    if isinstance(data, str):
-        return json.loads(data)
-    return data
+
+    # Legacy support: if old single-row report_context exists, prefer it.
+    legacy_data = None
+    merged: dict = {}
+
+    for context_key, context_data in rows:
+        key = (context_key or "").strip()
+        data = context_data
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                # Keep raw string if it's not valid JSON
+                pass
+
+        if key == "report_context":
+            legacy_data = data
+            continue
+
+        if key.startswith("report_context."):
+            top_key = key[len("report_context.") :]
+            merged[top_key] = data
+
+    if legacy_data is not None:
+        return legacy_data
+    return merged or None
 
 
 @lru_cache(maxsize=None)
@@ -1005,20 +1049,6 @@ def build_failure_form_gui() -> None:
         mi_row = _fetch_main_issue_fields_for_vit(vit)
         if mi_row:
             mi, c1, c2 = mi_row
-            mi_norm = (mi or "").strip().lower()
-            # Guardrail: this form is CAMH-focused. If Main Issue is something else
-            # (e.g., PCBA) we warn and skip auto-filling for this VIT.
-            if mi_norm and mi_norm != "camh":
-                if not silent:
-                    messagebox.showinfo(
-                        "CAMH required",
-                        "This VIT ID is not CAMH, please check the ID again",
-                    )
-                skipped_vits.add(vit)
-                clear_form()
-                vit_id_var.set(vit)
-                refresh_interaction_states()
-                return False
             # If the row exists but the main-issue fields are all blank, prompt the user once per VIT.
             if not (mi or c1 or c2):
                 main_issue_missing = True
@@ -1752,8 +1782,8 @@ def build_failure_form_gui() -> None:
 
                 row_values = [r[1] for r in rows]
 
-                # Prepare for clipboard
-                values_for_clipboard = [(val or "").strip().replace("\n", " ") for val in row_values]
+                # Prepare for clipboard (keep newlines inside each cell; quote TSV as needed)
+                values_for_clipboard = [_clipboard_tsv_field(val) for val in row_values]
                 all_rows_for_clipboard.append("\t".join(values_for_clipboard))
 
                 success_count += 1
@@ -1766,7 +1796,11 @@ def build_failure_form_gui() -> None:
 
             # Copy to clipboard
             if header_names and all_rows_for_clipboard:
-                tsv = "\t".join(header_names) + "\n" + "\n".join(all_rows_for_clipboard)
+                tsv = (
+                    "\t".join(_clipboard_tsv_field(h) for h in header_names)
+                    + "\n"
+                    + "\n".join(all_rows_for_clipboard)
+                )
                 root.clipboard_clear()
                 root.clipboard_append(tsv)
 
@@ -2188,8 +2222,8 @@ def build_failure_form_gui() -> None:
         win.geometry("920x620")
 
         def _copy_report():
-            names = [name for name, _ in rows]
-            values = [(value or "").strip().replace("\n", " ") for _, value in rows]
+            names = [_clipboard_tsv_field(name) for name, _ in rows]
+            values = [_clipboard_tsv_field(value) for _, value in rows]
             tsv = "\t".join(names) + "\n" + "\t".join(values)
             win.clipboard_clear()
             win.clipboard_append(tsv)

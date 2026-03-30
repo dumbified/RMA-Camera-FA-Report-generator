@@ -145,9 +145,18 @@ def classify_camh_from_vit(vit_id: str, image_dir: str) -> FallbackResult:
             continue
         try:
             result = main_mod.classify_image(img)
+            cat = (result or {}).get("category", "")
+            
+            # Fallback: if model is not loaded or returned pending, try rule-based check directly
+            if cat.lower() == "pending" or result.get("method") == "No Model":
+                if hasattr(main_mod, "run_rule_based_check"):
+                    rule_cat = main_mod.run_rule_based_check(img)
+                    if rule_cat and rule_cat.lower() != "pending":
+                        cat = rule_cat
+                        
         except Exception:
             continue
-        cat = (result or {}).get("category", "")
+            
         cat_norm = (cat or "").strip().lower()
         if cat_norm == "pending":
             pending_votes += 1
