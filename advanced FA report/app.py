@@ -457,6 +457,53 @@ def _fetch_main_issue_fields_for_vit(vit_id: str) -> tuple[str, str, str] | None
     return (mi, c1, c2)
 
 
+def _backfill_main_issue_for_camh(vit_id: str, camh_category2: str) -> bool:
+    """
+    Backfill rma_cam Main Issue fields for CAMH segmentation.
+
+    Writes ONLY when:
+      - Main Issue, Main Issue Category 1, Main Issue Category 2 are all blank.
+
+    Sets:
+      - Main Issue = 'CAMH'
+      - Main Issue Category 1 = 'CCD Segment Die'
+      - Main Issue Category 2 = <camh_category2>
+
+    Returns True if an update was executed successfully, else False.
+    """
+    vit_id = (vit_id or "").strip()
+    camh_category2 = (camh_category2 or "").strip()
+    if not vit_id or not camh_category2:
+        return False
+
+    conn = _get_db_connection()
+    if not conn:
+        return False
+    cfg = get_fa_mysql_config()
+
+    sql = f"""
+        UPDATE `{cfg.rma_cam_table}`
+        SET
+            `Main Issue` = %s,
+            `Main Issue Category 1` = %s,
+            `Main Issue Category 2` = %s
+        WHERE VIT = %s
+          AND (`Main Issue` IS NULL OR `Main Issue` = '')
+          AND (`Main Issue Category 1` IS NULL OR `Main Issue Category 1` = '')
+          AND (`Main Issue Category 2` IS NULL OR `Main Issue Category 2` = '')
+    """
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, ("CAMH", "CCD Segment Die", camh_category2, vit_id))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def _map_main_issue_to_camh_screening(main_issue: str, cat1: str, cat2: str) -> str:
     """
     Map DB main-issue fields into CAMH Screening dropdown value.
@@ -953,6 +1000,8 @@ def build_failure_form_gui() -> None:
             fallback = classify_camh_from_vit(vit, classification_image_dir_var.get())
             if fallback.camh_value:
                 camh_var.set(fallback.camh_value)
+                # Persist classification into rma_cam Main Issue fields when they are blank.
+                _backfill_main_issue_for_camh(vit, fallback.camh_value)
             else:
                 # No usable classification output.
                 # If no images matched this VIT ID, warn the user and skip this VIT.
