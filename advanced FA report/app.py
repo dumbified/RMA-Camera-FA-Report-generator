@@ -79,6 +79,7 @@ def _load_31g_component_from_db() -> dict[str, tuple[str, str, str]]:
     conn = _get_db_connection()
     if not conn:
         return {}
+    cfg = get_fa_mysql_config()
 
     ref_to_part: dict[str, tuple[str, str, str]] = {}
     try:
@@ -93,7 +94,7 @@ def _load_31g_component_from_db() -> dict[str, tuple[str, str, str]]:
             key = component.lower()
             if key not in ref_to_part:
                 ref_to_part[key] = (part_id, desc, component)
-    except mysql.connector.Error:
+    except Exception:
         pass
     finally:
         conn.close()
@@ -144,6 +145,7 @@ def _fetch_screening_for_vit(vit_id: str) -> tuple[str, str, str] | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
     col_sets = [
         ("`SCREENING PCBA`", "`SCREENING CAMH`", "`SCREENING SCINTILLATOR`"),
         ("SCREENING_PCBA", "SCREENING_CAMH", "SCREENING_SCINTILLATOR"),
@@ -161,9 +163,9 @@ def _fetch_screening_for_vit(vit_id: str) -> tuple[str, str, str] | None:
                 )
                 row = cursor.fetchone()
                 break
-            except mysql.connector.Error:
+            except Exception:
                 continue
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -219,6 +221,7 @@ def _fetch_ft_result_for_vit(vit_id: str) -> str | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     col_candidates = [
         "`RESERVATIONS CAMH`",
@@ -236,9 +239,9 @@ def _fetch_ft_result_for_vit(vit_id: str) -> str | None:
                 )
                 row = cursor.fetchone()
                 break
-            except mysql.connector.Error:
+            except Exception:
                 continue
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -270,6 +273,7 @@ def _fetch_reworked_flag_for_vit(vit_id: str) -> str | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     col_candidates = ["`Reworked`", "REWORKED", "reworked"]
     row = None
@@ -283,9 +287,9 @@ def _fetch_reworked_flag_for_vit(vit_id: str) -> str | None:
                 )
                 row = cursor.fetchone()
                 break
-            except mysql.connector.Error:
+            except Exception:
                 continue
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -309,6 +313,7 @@ def _fetch_reservations_camh_raw(vit_id: str) -> str | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
     col_candidates = [
         "`RESERVATIONS CAMH S/N`",
         "RESERVATIONS_CAMH_SN",
@@ -325,9 +330,9 @@ def _fetch_reservations_camh_raw(vit_id: str) -> str | None:
                 )
                 row = cursor.fetchone()
                 break
-            except mysql.connector.Error:
+            except Exception:
                 continue
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -354,6 +359,7 @@ def _infer_camera_model_from_db(vit_id: str) -> str | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     unit_cols = ["`UNIT S/N`", "UNIT_SN", "unit_sn"]
     camh_cols = ["`CAMH S/N`", "CAMH_SN", "camh_sn"]
@@ -370,11 +376,11 @@ def _infer_camera_model_from_db(vit_id: str) -> str | None:
                     row = cursor.fetchone()
                     if row:
                         break
-                except mysql.connector.Error:
+                except Exception:
                     continue
             if row:
                 break
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -411,6 +417,7 @@ def _fetch_main_issue_fields_for_vit(vit_id: str) -> tuple[str, str, str] | None
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     main_issue_cols = ["`Main Issue`", "MAIN_ISSUE", "main_issue"]
     cat1_cols = ["`Main Issue Category 1`", "MAIN_ISSUE_CATEGORY_1", "main_issue_category_1"]
@@ -430,13 +437,13 @@ def _fetch_main_issue_fields_for_vit(vit_id: str) -> tuple[str, str, str] | None
                         row = cursor.fetchone()
                         if row:
                             break
-                    except mysql.connector.Error:
+                    except Exception:
                         continue
                 if row:
                     break
             if row:
                 break
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -500,6 +507,7 @@ def _load_camh_base_sn_from_db() -> dict[str, str]:
     conn = _get_db_connection()
     if not conn:
         return {"3G_31G": "89504-0008", "33G_34G": "89504-0010"}
+    cfg = get_fa_mysql_config()
     result: dict[str, str] = {}
     try:
         cursor = conn.cursor()
@@ -507,7 +515,7 @@ def _load_camh_base_sn_from_db() -> dict[str, str]:
         for group, base_sn in cursor.fetchall():
             if group and base_sn:
                 result[str(group).strip()] = str(base_sn).strip()
-    except mysql.connector.Error:
+    except Exception:
         pass
     finally:
         conn.close()
@@ -548,6 +556,7 @@ def _load_report_context_from_db() -> dict | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     try:
         cursor = conn.cursor()
@@ -563,7 +572,7 @@ def _load_report_context_from_db() -> dict | None:
             """
         )
         rows = cursor.fetchall()
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -604,6 +613,7 @@ def _load_customer_request_templates_from_db() -> dict | None:
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     templates: dict = {}
     try:
@@ -615,7 +625,7 @@ def _load_customer_request_templates_from_db() -> dict | None:
             if isinstance(tpl_data, str):
                 tpl_data = json.loads(tpl_data)
             templates[tpl_key or ""] = tpl_data or {}
-    except mysql.connector.Error:
+    except Exception:
         return None
     finally:
         conn.close()
@@ -657,6 +667,7 @@ def _load_report_rules_from_db():
     conn = _get_db_connection()
     if not conn:
         return None
+    cfg = get_fa_mysql_config()
 
     sections_sql = f"""
         SELECT id, name
@@ -677,7 +688,7 @@ def _load_report_rules_from_db():
 
         cursor.execute(rules_sql)
         rules_rows = cursor.fetchall()
-    except mysql.connector.Error as exc:
+    except Exception as exc:
         conn.close()
         messagebox.showerror("Report rules", f"Failed to query rules tables:\n{exc}")
         return None
@@ -714,7 +725,7 @@ def _load_report_rules_from_db():
 
 def build_failure_form_gui() -> None:
     root = tk.Tk()
-    root.title("Camera Failure Analysis Form (Advanced / DB rules)")
+    root.title("Camera Failure Analysis Form (Advanced)")
     root.geometry("1150x820")
 
     main_paned = ttk.PanedWindow(root, orient="horizontal")

@@ -729,7 +729,11 @@ def build_failure_form_gui() -> None:
 
     def _load_customer_request_templates() -> dict | None:
         """Load customer_request_templates.json (customer request summary presets)."""
-        path = os.path.join(os.path.dirname(__file__), "customer_request_templates.json")
+        # Prefer local file if present; otherwise fall back to advanced FA report folder.
+        here = os.path.dirname(__file__)
+        local_path = os.path.join(here, "customer_request_templates.json")
+        adv_path = os.path.abspath(os.path.join(here, "..", "advanced FA report", "customer_request_templates.json"))
+        path = local_path if os.path.isfile(local_path) else adv_path
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 return json.load(handle)
