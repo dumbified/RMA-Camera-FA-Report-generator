@@ -2,26 +2,21 @@
 
 A desktop application for generating structured Failure Analysis (FA) reports for RMA camera units. It connects to a MySQL database, auto-fills form fields from screening records, and generates a formatted JIRA-ready report.
 
----
-
 ## Requirements
 
 - Python 3.10 or higher
 - MySQL Server 8.0 or higher (running locally or on a network)
 - Git
 
----
-
 ## Installation
 
 ```bash
-pip install git+https://github.com/yourusername/FYP.git
+pip install git+https://github.com/dumbified/RMA-Camera-FA-Report-generator.git
 ```
 
 This installs all required dependencies automatically:
 `mysql-connector-python`, `opencv-python`, `torch`, `torchvision`, `timm`, `Pillow`, `numpy`
 
----
 
 ## Configuration
 
@@ -37,8 +32,6 @@ return FaMySQLConfig(
     ...
 )
 ```
-
----
 
 ## Database Setup (Run Once)
 
@@ -56,8 +49,6 @@ This will create the following tables in your MySQL database:
 
 > **Note:** The `rma_cam` and `fa_3.1_cam_component` tables are **not** created by this script. They must already exist in your database with the correct schema and data.
 
----
-
 ## Running the Application
 
 ```bash
@@ -65,8 +56,6 @@ fa-report
 ```
 
 The GUI will launch. On first use, click **Settings** to set the folder path where your VIT camera images are stored.
-
----
 
 ## Usage Overview
 
@@ -80,12 +69,10 @@ For batch processing, use the **Batch Queue** panel on the left:
 2. Select each VIT from the list to review and fill in their details.
 3. Click **Batch Export (Copy to Clipboard)** to export all reports at once.
 
----
-
 ## Project Structure
 
 ```
-FYP/
+root/
 ├── fa_report/
 │   ├── app.py                          # Main GUI application
 │   ├── bridger.py                      # Image folder search & classification bridge
