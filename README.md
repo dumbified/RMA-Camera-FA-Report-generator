@@ -2,25 +2,36 @@
 
 A desktop application for generating structured Failure Analysis (FA) reports for RMA camera units. It connects to a MySQL database, auto-fills form fields from screening records, and generates a formatted JIRA-ready report.
 
+---
+
 ## Requirements
 
 - Python 3.10 or higher
 - MySQL Server 8.0 or higher (running locally or on a network)
 - Git
 
+---
+
 ## Installation
 
+### Step 1: Clone the Repository
+
 ```bash
-pip install git+https://github.com/dumbified/RMA-Camera-FA-Report-generator.git
+git clone https://github.com/dumbified/RMA-Camera-FA-Report-generator.git
+cd RMA-Camera-FA-Report-generator
 ```
 
-This installs all required dependencies automatically:
-`mysql-connector-python`, `opencv-python`, `torch`, `torchvision`, `timm`, `Pillow`, `numpy`
+### Step 2: Install Dependencies
 
+```bash
+pip install -r requirements.txt
+```
+
+---
 
 ## Configuration
 
-Before running the app, configure the database connection in `fa_report/da_config.py`:
+Open `fa_report/db_config.py` and update the database credentials to match your MySQL setup:
 
 ```python
 return FaMySQLConfig(
@@ -28,17 +39,17 @@ return FaMySQLConfig(
     port=3306,              # Your MySQL port
     user="root",            # Your MySQL username
     password="admin123",    # Your MySQL password
-    database="fa_report",   # Change to your existing database name
+    database="fa_report",   # Your existing database name
     ...
 )
 ```
 
 ## Database Setup (Run Once)
 
-After configuring the database connection, run the initialisation script to create and populate the required tables:
+From the project root folder, run:
 
 ```bash
-fa-report-init-db
+python -m fa_report.init_db
 ```
 
 This will create the following tables in your MySQL database:
@@ -49,13 +60,19 @@ This will create the following tables in your MySQL database:
 
 > **Note:** The `rma_cam` and `fa_3.1_cam_component` tables are **not** created by this script. They must already exist in your database with the correct schema and data.
 
+---
+
 ## Running the Application
 
+From the project root folder, run:
+
 ```bash
-fa-report
+python -m fa_report.app
 ```
 
 The GUI will launch. On first use, click **Settings** to set the folder path where your VIT camera images are stored.
+
+---
 
 ## Usage Overview
 
@@ -69,20 +86,21 @@ For batch processing, use the **Batch Queue** panel on the left:
 2. Select each VIT from the list to review and fill in their details.
 3. Click **Batch Export (Copy to Clipboard)** to export all reports at once.
 
+---
+
 ## Project Structure
 
 ```
-root/
+RMA-Camera-FA-Report-generator/
 ├── fa_report/
 │   ├── app.py                          # Main GUI application
 │   ├── bridger.py                      # Image folder search & classification bridge
 │   ├── image_classifier.py             # MobileViT v2 model + rule-based fallback
-│   ├── da_config.py                    # MySQL connection configuration
+│   ├── db_config.py                    # MySQL connection configuration
 │   ├── init_db.py                      # Database initialisation script
 │   ├── mobilevitv2.pth                 # Trained model weights
 │   ├── report_rules.json               # FA report generation rules
 │   └── customer_request_templates.json # Customer request report templates
-├── pyproject.toml
 ├── requirements.txt
 └── README.md
 ```

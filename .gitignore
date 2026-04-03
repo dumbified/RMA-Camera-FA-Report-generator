@@ -1,2 +1,26 @@
+# IDE
 .idea/
 .venv/
+.cursor/
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Images
+*.jpeg
+*.jpg
+*.png
+*.bmp
+*.tif
+*.tiff
+
+# Large data folders (local only, not for distribution)
+dataset/
+datasets/
+datasets_split/
+filtered_vit/
+results/
+samples/
