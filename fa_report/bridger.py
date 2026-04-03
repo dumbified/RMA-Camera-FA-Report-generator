@@ -90,7 +90,7 @@ def find_images_for_vit(image_dir: str, vit_id: str) -> list[str]:
 
 def _load_main_classifier_module():
     try:
-        import image_classifier as main_mod
+        import fa_report.image_classifier as main_mod
         return main_mod
     except Exception:
         return None

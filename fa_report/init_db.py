@@ -2,8 +2,8 @@
 Migration script: load FA report rules and related data from JSON into MySQL tables.
 
 This reads:
-  - FA report/report_rules.json -> fa_report_sections, fa_report_data (rules + context)
-  - advanced FA report/customer_request_templates.json -> fa_customer_request_templates
+  - fa_report/report_rules.json -> fa_report_sections, fa_report_data (rules + context)
+  - fa_report/customer_request_templates.json -> fa_customer_request_templates
   - fa_camh_base_sn: base S/N by camera group (3G_31G -> 89504-0008, 33G_34G -> 89504-0010).
 
 3.1G component data is NOT migrated; it is fetched directly from fa_3.1_cam_component in SQL Workbench.
@@ -17,7 +17,7 @@ import json
 import os
 from typing import Any, Dict, List
 
-from da_config import get_fa_mysql_config
+from fa_report.da_config import get_fa_mysql_config
 
 
 def _load_json_rules() -> Dict[str, Any]:

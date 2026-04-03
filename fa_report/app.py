@@ -5,8 +5,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from functools import lru_cache
 
-from da_config import get_fa_mysql_config
-from bridger import (
+from fa_report.da_config import get_fa_mysql_config
+from fa_report.bridger import (
     classify_camh_from_vit,
     get_image_dir_from_config,
     set_image_dir_in_config,

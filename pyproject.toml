@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "fa-report"
+version = "1.0.0"
+description = "RMA Camera Failure Analysis Report Generator"
+requires-python = ">=3.10"
+dependencies = [
+    "mysql-connector-python",
+    "opencv-python",
+    "Pillow",
+    "torch",
+    "torchvision",
+    "timm",
+    "numpy",
+]
+
+[project.scripts]
+fa-report = "fa_report.app:build_failure_form_gui"
+fa-report-init-db = "fa_report.init_db:migrate"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fa_report*"]
+
+[tool.setuptools.package-data]
+fa_report = ["*.pth", "*.json"]
