@@ -261,6 +261,13 @@
           "fa_camh": "*"
         },
         "text": "Based on failure analysis, "
+      },
+      {
+        "id": "fa_based_on_pcba",
+        "when": {
+          "fa_pcba": "*"
+        },
+        "text": "Based on failure analysis, "
       }
     ],
     "fa_camh": [

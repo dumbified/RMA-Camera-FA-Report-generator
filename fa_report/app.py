@@ -5,6 +5,12 @@ import tkinter as tk
 from tkinter import messagebox, ttk, filedialog
 from functools import lru_cache
 
+try:
+    from PIL import Image as _PILImage, ImageTk as _PILImageTk
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PIL_AVAILABLE = False
+
 from fa_report.db_config import get_fa_mysql_config
 from fa_report.bridger import (
     classify_camh_from_vit,
@@ -571,23 +577,29 @@ def _load_camh_base_sn_from_db() -> dict[str, str]:
     return result
 
 
-def _get_dynamic_camh_sn(camera_model: str, ft_result: str, vit_id: str) -> tuple[str, str]:
+def _get_dynamic_camh_sn(camera_model: str, ft_result: str, vit_id: str) -> tuple[str, str, str]:
     """
-    Return (sn_31g, sn_33g) for use in Action Taken.
-    Base S/N loaded from fa_camh_base_sn (3G_31G, 33G_34G). If FT result is Pass with new camh or
-    Pass with swap camh, append last 4 chars of RESERVATIONS CAMH S/N to each base.
+    Return (sn_31g, sn_33g_pcba, sn_33g_camh) for use in Action Taken.
+
+    - sn_31g:      camera-head S/N for 3G / 3.1G models  (base: 89504-0008)
+    - sn_33g_pcba: PCBA S/N for 3.3G / 3.4G models       (base: 89504-0010)
+    - sn_33g_camh: camera-head S/N for 3.3G / 3.4G models (base: 89504-0013)
+
+    When FT result is "Pass with new camh" or "Pass with swap camh", the last 4
+    chars of the RESERVATIONS CAMH S/N are appended to all three bases.
     """
     bases = _load_camh_base_sn_from_db()
     base_31g = bases.get("3G_31G", "89504-0008")
     base_33g = bases.get("33G_34G", "89504-0010")
+    base_33g_camh = bases.get("33G_34G_camh", "89504-0013")
     ft_lower = (ft_result or "").strip().lower()
     vit_id = (vit_id or "").strip()
     if ft_lower in ("pass with new camh", "pass with swap camh") and vit_id:
         raw = _fetch_reservations_camh_raw(vit_id)
         if raw:
             suffix = raw[-4:] if len(raw) >= 4 else raw
-            return (base_31g + suffix, base_33g + suffix)
-    return (base_31g, base_33g)
+            return (base_31g + suffix, base_33g + suffix, base_33g_camh + suffix)
+    return (base_31g, base_33g, base_33g_camh)
 
 
 def _replace_dynamic_sn_in_action_text(text: str, sn_31g: str, sn_33g: str) -> str:
@@ -651,7 +663,26 @@ def _load_report_context_from_db() -> dict | None:
 
     if legacy_data is not None:
         return legacy_data
-    return merged or None
+
+    # Re-nest dotted sub-keys: "action_taken.ft_camh" -> merged["action_taken"]["ft_camh"]
+    nested: dict = {}
+    flat: dict = {}
+    for top_key, value in merged.items():
+        if "." in top_key:
+            parts = top_key.split(".", 1)
+            parent, child = parts[0], parts[1]
+            nested.setdefault(parent, {})[child] = value
+        else:
+            flat[top_key] = value
+
+    result = {**flat}
+    for parent, children in nested.items():
+        if parent in result and isinstance(result[parent], dict):
+            result[parent].update(children)
+        else:
+            result[parent] = children
+
+    return result or None
 
 
 @lru_cache(maxsize=None)
@@ -773,7 +804,7 @@ def _load_report_rules_from_db():
 def build_failure_form_gui() -> None:
     root = tk.Tk()
     root.title("Camera Failure Analysis Form (Advanced)")
-    root.geometry("1150x820")
+    root.geometry("1350x820")
 
     main_paned = ttk.PanedWindow(root, orient="horizontal")
     main_paned.pack(fill="both", expand=True, padx=12, pady=12)
@@ -841,9 +872,30 @@ def build_failure_form_gui() -> None:
     # We will define on_listbox_select and batch_export later in the function
     # after all variables are defined.
 
-    # --- Right Panel: Form ---
+    # --- Centre Panel: Form ---
     right_panel = ttk.Frame(main_paned)
     main_paned.add(right_panel, weight=1)
+
+    # --- Far-Right Panel: Image Preview ---
+    image_panel = ttk.Frame(main_paned, width=360)
+    main_paned.add(image_panel, weight=0)
+
+    ttk.Label(image_panel, text="Image Preview", font=("", 10, "bold")).pack(anchor="w", padx=6, pady=(4, 2))
+
+    img_counter_var = tk.StringVar(value="No images")
+    ttk.Label(image_panel, textvariable=img_counter_var, foreground="#555").pack(anchor="w", padx=6)
+
+    img_canvas = tk.Canvas(image_panel, highlightthickness=0)
+    img_canvas.pack(fill="both", expand=True, padx=6, pady=4)
+
+    img_nav_frame = ttk.Frame(image_panel)
+    img_nav_frame.pack(fill="x", padx=6, pady=(0, 6))
+    img_nav_frame.columnconfigure(0, weight=1)
+    img_nav_frame.columnconfigure(1, weight=1)
+    img_prev_btn = ttk.Button(img_nav_frame, text="◀ Prev")
+    img_prev_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+    img_next_btn = ttk.Button(img_nav_frame, text="Next ▶")
+    img_next_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
     canvas = tk.Canvas(right_panel, highlightthickness=0)
     scrollbar = ttk.Scrollbar(right_panel, orient="vertical", command=canvas.yview)
@@ -948,6 +1000,84 @@ def build_failure_form_gui() -> None:
         ttk.Button(btn_row, text="Save", command=lambda: (_persist_image_dir(), win.destroy())).grid(row=0, column=0, padx=(0, 4), sticky="ew")
         ttk.Button(btn_row, text="Cancel", command=win.destroy).grid(row=0, column=1, padx=(4, 0), sticky="ew")
 
+    # --- Image Preview panel logic ---
+    _img_paths: list[str] = []
+    _img_idx: list[int] = [0]          # mutable box so closures can write to it
+    _img_photo_ref: list = [None]       # keep PhotoImage alive (GC protection)
+
+    def _render_current_image() -> None:
+        img_canvas.delete("all")
+        if not _img_paths:
+            img_counter_var.set("No images")
+            img_canvas.create_text(
+                img_canvas.winfo_width() // 2 or 160,
+                img_canvas.winfo_height() // 2 or 160,
+                text="No image", fill="#aaa", font=("", 11),
+            )
+            _img_photo_ref[0] = None
+            return
+
+        idx = _img_idx[0]
+        img_counter_var.set(f"{os.path.basename(_img_paths[idx])}  ({idx + 1}/{len(_img_paths)})")
+
+        if not _PIL_AVAILABLE:
+            img_canvas.create_text(
+                img_canvas.winfo_width() // 2 or 160,
+                img_canvas.winfo_height() // 2 or 160,
+                text="Install Pillow to\nview images.\n(pip install Pillow)",
+                fill="#888", font=("", 10), justify="center",
+            )
+            return
+
+        try:
+            pil_img = _PILImage.open(_img_paths[idx])
+            # Scale to fit the canvas, keeping aspect ratio
+            root.update_idletasks()
+            cw = img_canvas.winfo_width() or 340
+            ch = img_canvas.winfo_height() or 500
+            pil_img.thumbnail((cw, ch), _PILImage.LANCZOS)
+            photo = _PILImageTk.PhotoImage(pil_img)
+            _img_photo_ref[0] = photo   # prevent GC
+            img_canvas.create_image(cw // 2, ch // 2, anchor="center", image=photo)
+        except Exception as exc:
+            img_canvas.create_text(
+                img_canvas.winfo_width() // 2 or 160,
+                img_canvas.winfo_height() // 2 or 160,
+                text=f"Cannot load image:\n{exc}", fill="#f88", font=("", 9), justify="center",
+            )
+
+    def _refresh_image_panel(vit: str = "") -> None:
+        """Re-scan the image directory for the given VIT and show the first match."""
+        vit = (vit or vit_id_var.get() or "").strip()
+        image_dir = classification_image_dir_var.get().strip()
+        if vit and image_dir:
+            from fa_report.bridger import find_images_for_vit
+            paths = find_images_for_vit(image_dir, vit)
+        else:
+            paths = []
+        _img_paths.clear()
+        _img_paths.extend(paths)
+        _img_idx[0] = 0
+        _render_current_image()
+
+    def _img_prev() -> None:
+        if not _img_paths:
+            return
+        _img_idx[0] = (_img_idx[0] - 1) % len(_img_paths)
+        _render_current_image()
+
+    def _img_next() -> None:
+        if not _img_paths:
+            return
+        _img_idx[0] = (_img_idx[0] + 1) % len(_img_paths)
+        _render_current_image()
+
+    img_prev_btn.configure(command=_img_prev)
+    img_next_btn.configure(command=_img_next)
+
+    # Re-render when the canvas is resized (e.g. user drags the sash)
+    img_canvas.bind("<Configure>", lambda _e: _render_current_image())
+
     # --- VIT ID [user types; Enter or FocusOut fetches screening from rma_cam] ---
     ttk.Label(form_frame, text="VIT ID").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
     vit_id_entry = ttk.Entry(form_frame, textvariable=vit_id_var, width=20)
@@ -970,6 +1100,7 @@ def build_failure_form_gui() -> None:
         elif v_upper.startswith("VIT-"):
             vit = f"VIT-{v_upper[4:]}"
         vit_id_var.set(vit)
+        _refresh_image_panel(vit)
 
         # Reset skip marker for this VIT (might have been skipped earlier).
         skipped_vits.discard(vit)
@@ -1553,6 +1684,7 @@ def build_failure_form_gui() -> None:
         pcba_final_var.set("")
         scrap_why_var.set("")
         bad_camh_assemble_bubble_var.set(False)
+        _refresh_image_panel("")  # clear the image panel
 
     def get_form_state() -> dict:
         return {
@@ -1643,11 +1775,12 @@ def build_failure_form_gui() -> None:
         # Load new state or fetch from DB
         if new_vit in batch_states:
             set_form_state(batch_states[new_vit])
+            _refresh_image_panel(new_vit)   # cache-restore path must refresh too
         else:
             clear_form()
             vit_id_var.set(new_vit)
-            _on_vit_confirm() # This triggers the DB fetch
-            
+            _on_vit_confirm() # triggers DB fetch + _refresh_image_panel internally
+
     batch_listbox.bind("<<ListboxSelect>>", on_listbox_select)
     
     def batch_export():
@@ -2067,7 +2200,7 @@ def build_failure_form_gui() -> None:
         unable = pcba_can_repair == "unable" or ft_can_repair == "unable"
         e20_new_camh = (form.get("ft_pass_which_camh") or "").strip().lower() == "new camh"
         vit_id = (form.get("vit_id") or "").strip()
-        sn_31g, sn_33g = _get_dynamic_camh_sn(camera_model, ft_result or "", vit_id)
+        sn_31g, sn_33g, sn_33g_camh = _get_dynamic_camh_sn(camera_model, ft_result or "", vit_id)
 
         if customer_tpl is not None:
             base_action = (customer_tpl.get("action_taken") or "").strip()
@@ -2086,6 +2219,11 @@ def build_failure_form_gui() -> None:
                 b105 = ft_camh_texts.get("pass with swap camh", "")
             elif ft_lower == "pass with new camh" or e20_new_camh:
                 b105 = ft_camh_texts.get("pass with new camh", "")
+
+            # For 3.3G / 3.4G the camera-head part is 89504-0013, not 89504-0008.
+            # Replace before the global substitution so the wrong SN is never written.
+            if b105 and camera_model in ("3.3G", "3.4G"):
+                b105 = b105.replace("89504-0008", sn_33g_camh)
 
             b106 = ""
             if unable:
@@ -2150,7 +2288,7 @@ def build_failure_form_gui() -> None:
         rows = build_summary_fields(data, body_text)
 
         win = tk.Toplevel(root)
-        win.title("Generated JIRA Report (Advanced / DB rules)")
+        win.title("Generated JIRA Report")
         win.geometry("920x620")
 
         def _copy_report():

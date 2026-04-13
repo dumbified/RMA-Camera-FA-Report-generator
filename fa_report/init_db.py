@@ -17,7 +17,7 @@ import json
 import os
 from typing import Any, Dict, List
 
-from fa_report.da_config import get_fa_mysql_config
+from fa_report.db_config import get_fa_mysql_config
 
 
 def _load_json_rules() -> Dict[str, Any]:
@@ -220,6 +220,11 @@ def migrate() -> None:
         cursor.execute(
             f"INSERT INTO `{cfg.camh_base_sn_table}` (camera_group, base_sn) VALUES (%s, %s)",
             ("33G_34G", "89504-0010"),
+        )
+        # Camera-head S/N for 3.3G / 3.4G (distinct from the PCBA 89504-0010 row above)
+        cursor.execute(
+            f"INSERT INTO `{cfg.camh_base_sn_table}` (camera_group, base_sn) VALUES (%s, %s)",
+            ("33G_34G_camh", "89504-0013"),
         )
 
         conn.commit()

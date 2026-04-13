@@ -101,7 +101,7 @@ def _map_category_to_camh(category: str) -> str:
     mapping = {
         "whole segment": "Whole Segment",
         "white segment": "White Segment",
-        "die segment": "Multiple Segment Die",
+        "die segment": "<=2 segment",
         "line between": "Line Between Segment",
         "pending": "",
     }

@@ -28,9 +28,6 @@ class FaMySQLConfig:
 def get_fa_mysql_config() -> FaMySQLConfig:
     """
     Return MySQL configuration for FA report rules.
-
-    By default this reuses the same database as csv_to_mysql (\"upload_csv\"),
-    but with distinct tables for FA rules.
     """
     return FaMySQLConfig(
         host="localhost",
